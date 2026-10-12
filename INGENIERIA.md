@@ -20,7 +20,7 @@ Este documento resume lo que hace falta para ponerlo en internet. La guía paso 
 | Capa | Tecnología |
 |---|---|
 | Lenguaje y ejecución | JavaScript (CommonJS) sobre Node.js 22 o superior. Sin TypeScript ni paso de compilación |
-| Servidor | Sin framework: módulo `http` de Node y un enrutador propio (`routes.js`, unas 150 rutas) |
+| Servidor | Sin framework: módulo `http` de Node y un enrutador propio (`routes.js`, unas 135 rutas) |
 | Base de datos | SQLite con el módulo nativo `node:sqlite` (acceso síncrono). Sin ORM, SQL directo. Una base por empresa más una de la plataforma |
 | Dependencias | Solo `@anthropic-ai/sdk` (reconocimiento por foto, opcional) |
 | Frontend | JavaScript sin framework ni librerías, servido como archivos estáticos desde `public/`. Tres aplicaciones: administrativa (`/`), clientes (`/tienda/`) y repartidores (`/reparto/`). Las dos últimas tienen manifiesto de aplicación web instalable (PWA); no hay service worker, así que no funcionan sin conexión |
