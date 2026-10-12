@@ -1,0 +1,4 @@
+codigo_barra,codigo_interno,nombre,categoria,marca,presentacion,unidad_compra,unidad_venta,factor_conversion,costo_usd,precio_venta_usd,margen_utilidad,precio_fijo,stock_actual,stock_minimo,stock_maximo,proveedor_principal,ubicacion,estado
+7590000000011,PROD-0001,Harina de maiz precocida 1 kg,Harinas,Marca ejemplo,1 kg,caja,unidad,20,0.95,1.30,36.84,si,25,12,60,Proveedor ejemplo,Pasillo 1,activo
+7590000000028,PROD-0002,Arroz blanco 1 kg,Granos,Marca ejemplo,1 kg,caja,unidad,24,0.90,1.25,38.89,si,18,12,72,Proveedor ejemplo,Pasillo 1,activo
+7590000000035,PROD-0003,Refresco 2 litros,Bebidas,Marca ejemplo,2 litros,caja,unidad,6,1.10,1.60,45.45,si,30,18,90,Proveedor ejemplo,Nevera 1,activo
