@@ -15,6 +15,27 @@ Este documento resume lo que hace falta para ponerlo en internet. La guía paso 
 - Multiempresa: una base SQLite por empresa en `DATA_DIR/empresas/<codigo>.db` y una de la plataforma en `DATA_DIR/plataforma.db`.
 - Respaldos diarios automáticos con `VACUUM INTO` en `RESPALDOS_DIR` (se conservan `RESPALDOS_CONSERVAR`, 14 por defecto).
 
+## Stack técnico
+
+| Capa | Tecnología |
+|---|---|
+| Lenguaje y ejecución | JavaScript (CommonJS) sobre Node.js 22 o superior. Sin TypeScript ni paso de compilación |
+| Servidor | Sin framework: módulo `http` de Node y un enrutador propio (`routes.js`, unas 150 rutas) |
+| Base de datos | SQLite con el módulo nativo `node:sqlite` (acceso síncrono). Sin ORM, SQL directo. Una base por empresa más una de la plataforma |
+| Dependencias | Solo `@anthropic-ai/sdk` (reconocimiento por foto, opcional) |
+| Frontend | JavaScript sin framework ni librerías, servido como archivos estáticos desde `public/`. Tres aplicaciones: administrativa (`/`), clientes (`/tienda/`) y repartidores (`/reparto/`). Las dos últimas tienen manifiesto de aplicación web instalable (PWA); no hay service worker, así que no funcionan sin conexión |
+| Sesión y contraseñas | Token de sesión guardado en la base de cada empresa (formato `<codigo>.<hex>`); contraseñas con `scrypt` y sal |
+| Contexto multiempresa | `AsyncLocalStorage`: cada petición abre la base de su empresa |
+| Contenedor y despliegue | `Dockerfile` sobre `node:22-slim` y `fly.toml` para Fly.io (puerto interno 8080) |
+| Pruebas | `npm test`: plan de conteos más 29 bloques de humo sobre una base temporal; `test/simulador.js` genera datos y audita la consistencia |
+
+### Decisiones que conviene conocer
+
+- SQLite con disco persistente en lugar de una base externa, para no depender de otro servicio. Pasar a PostgreSQL implica reescribir el acceso a datos, porque hoy es síncrono.
+- Sin framework a propósito: pocas dependencias y poco que mantener. Migrar a Express o Fastify, o a React o Vue en el frontend, es posible pero es trabajo aparte.
+- Todos los montos internos se guardan en USD; los bolívares y euros se convierten con la tasa del día.
+- Roles y permisos editables por empresa (tabla `roles`): permisos por módulo (`mod.*`) y por acción. El administrador siempre tiene todo.
+
 ## Lo que necesita el servidor
 
 1. **Disco persistente** montado en `DATA_DIR`. Sin él se pierden los datos en cada reinicio.
