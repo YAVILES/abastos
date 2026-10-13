@@ -8,7 +8,7 @@ y los 18 documentos en `Documents\Codex\2026-07-03\n\outputs`.
 
 ## Arrancar
 
-Requiere Node.js 22 o superior. La única dependencia es el SDK de Anthropic (solo se usa para el
+Requiere Node.js 22.13 o superior (usa `node:sqlite`). La única dependencia es el SDK de Anthropic (solo se usa para el
 reconocimiento por foto):
 
 ```bash

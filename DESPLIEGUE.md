@@ -88,7 +88,9 @@ apt install -y curl git
 cd /opt && git clone https://github.com/YAVILES/abastos.git && cd abastos
 ```
 
-Crea `/opt/abastos/.env` (gitignored; lo leen docker con `--env-file` o systemd con `EnvironmentFile`):
+Crea `/opt/abastos/.env` (gitignored; lo leen docker con `--env-file` o systemd con `EnvironmentFile`).
+`PORT` es obligatorio: de ahí salen el puerto que levanta el servicio y el que verifica
+`scripts/deploy.sh`, y debe coincidir con el `proxy_pass` de Nginx:
 
 ```
 PORT=8080
@@ -133,6 +135,13 @@ EnvironmentFile=/opt/abastos/.env
 WantedBy=multi-user.target
 ```
 
+**Si manejas Node con nvm**, instala la 22 (`nvm install 22`) y apunta `ExecStart` al binario
+absoluto de nvm (`nvm which 22`, ej. `/root/.nvm/versions/node/v22.16.0/bin/node --no-warnings server.js`),
+luego `systemctl daemon-reload`. `scripts/deploy.sh` lee ese mismo binario de la unidad para
+verificar que sea Node >= 22.13, así que no depende de qué Node esté activo en el PATH;
+`npm ci` funciona con cualquier npm reciente (las dependencias son JavaScript puro).
+No hace falta cambiar el `default` de nvm ni tocar el Node del sistema.
+
 `scripts/deploy.sh` siempre deja el repo en `origin/main`, reconstruye/reinicia y verifica
 `http://127.0.0.1:8080/api/health`; si no responde, sale con error. Elige el modo con
 `ABASTO_DEPLOY_MODO=docker|systemd` (por defecto lo detecta solo).
@@ -149,7 +158,7 @@ server {
     client_max_body_size 25m;   # las fotos de reconocimiento y el logo viajan en base64 dentro del JSON
 
     location / {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:8080;   # mismo puerto que PORT en /opt/abastos/.env
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
