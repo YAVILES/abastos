@@ -74,15 +74,123 @@ fly secrets set ANTHROPIC_API_KEY="sk-ant-..."
 - `TRUST_PROXY=1` hace que el límite de intentos use la IP real detrás del proxy de Fly. No lo actives si el servidor
   está expuesto sin proxy, porque cualquiera podría falsificar esa cabecera.
 
-## Alternativa: un VPS con Docker
+## Alternativa: un VPS con despliegue automático
+
+Cualquier VPS con Ubuntu 22.04/24.04 sirve. Con `scripts/deploy.sh`, cada `git push` a `main`
+despliega solo si las pruebas pasan.
+
+### 1. Preparar el VPS (una sola vez)
 
 ```bash
-docker build -t abasto-cloud .
-docker run -d --name abasto --restart unless-stopped -p 127.0.0.1:8080:8080 -v abasto_data:/data \
-  -e ADMIN_PASSWORD=... -e PLATAFORMA_CLAVE=... -e ANTHROPIC_API_KEY=... abasto-cloud
+apt update && apt upgrade -y
+ufw allow OpenSSH && ufw allow 80 && ufw allow 443 && ufw enable
+apt install -y curl git
+cd /opt && git clone https://github.com/YAVILES/abastos.git && cd abastos
 ```
 
-Pon delante Caddy o Nginx para HTTPS (con Caddy basta `tuabasto.com { reverse_proxy 127.0.0.1:8080 }`).
+Crea `/opt/abastos/.env` (gitignored; lo leen docker con `--env-file` o systemd con `EnvironmentFile`):
+
+```
+PORT=8080
+DATA_DIR=/opt/abastos/data
+TRUST_PROXY=1
+ADMIN_PASSWORD=una-clave-larga
+PLATAFORMA_CLAVE=otra-clave-larga
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+### 2. Servicio: Docker o systemd
+
+**Docker:**
+
+```bash
+curl -fsSL https://get.docker.com | sh
+cd /opt/abastos && bash scripts/deploy.sh    # detecta docker, construye y levanta el contenedor "abasto"
+```
+
+**systemd:**
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt install -y nodejs
+cd /opt/abastos && bash scripts/deploy.sh    # detecta systemd, corre npm ci y reinicia "abasto"
+```
+
+La unidad `/etc/systemd/system/abasto.service` (ajusta las rutas si no clonaste en `/opt/abastos`):
+
+```ini
+[Unit]
+Description=Abasto Cloud
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/abastos
+ExecStart=/usr/bin/node --no-warnings server.js
+Restart=on-failure
+EnvironmentFile=/opt/abastos/.env
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`scripts/deploy.sh` siempre deja el repo en `origin/main`, reconstruye/reinicia y verifica
+`http://127.0.0.1:8080/api/health`; si no responde, sale con error. Elige el modo con
+`ABASTO_DEPLOY_MODO=docker|systemd` (por defecto lo detecta solo).
+
+### 3. HTTPS con Nginx y Certbot
+
+Como ya tienes Nginx y Certbot en el VPS, agrega un sitio más. `/etc/nginx/sites-available/abasto`:
+
+```nginx
+server {
+    listen 80;
+    server_name tuabasto.com;
+
+    client_max_body_size 25m;   # las fotos de reconocimiento y el logo viajan en base64 dentro del JSON
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+```bash
+ln -s /etc/nginx/sites-available/abasto /etc/nginx/sites-enabled/
+nginx -t && systemctl reload nginx
+certbot --nginx -d tuabasto.com      # emite el certificado y agrega la redirección a HTTPS
+```
+
+La app no usa websockets (la app del repartidor consulta cada 10 segundos), así que no hace falta
+configurar `Upgrade`. El HTTPS es necesario para la app de clientes y la cámara en el celular.
+`TRUST_PROXY=1` solo tiene sentido con este proxy delante, como está en el `.env` de arriba.
+
+### 4. Automático desde GitHub
+
+El workflow `.github/workflows/deploy.yml` corre `npm test` y, si pasan, entra por SSH al VPS y
+ejecuta `scripts/deploy.sh`. Define en el repo (Settings › Secrets and variables › Actions):
+
+| Secreto | Contenido |
+|---|---|
+| `VPS_HOST` | IP o dominio del VPS |
+| `VPS_USER` | usuario SSH (root, o uno con permisos para `systemctl restart abasto` o docker) |
+| `VPS_SSH_KEY` | llave privada SSH (la pública va en `~/.ssh/authorized_keys` del VPS) |
+| `VPS_PORT` | opcional, 22 por defecto |
+
+Desde entonces, cada push a `main` (o **Run workflow** a mano) despliega si las pruebas pasan.
+
+**Si prefieres sin GitHub Actions:** un cron que pregunta por cambios cada minuto
+(`crontab -e`: `* * * * * cd /opt/abastos && git fetch --quiet origin main && [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ] && bash scripts/deploy.sh >> /var/log/abasto-deploy.log 2>&1`),
+o un webhook (`apt install webhook`) apuntando a `https://tuabasto.com/hooks/...` detrás de Caddy.
+
+### 5. Respaldos
+
+Una copia diaria con cron fuera del VPS (`rsync`/`rclone` de `data/respaldos/`), porque los
+respaldos del sistema quedan en el mismo disco. Mantén **una sola instancia**: la base es SQLite.
 
 ## Variables de entorno
 
