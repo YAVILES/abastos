@@ -26,15 +26,21 @@ if [ "$MODO" = "auto" ]; then
   fi
 fi
 
-# La app depende de node:sqlite (Node >= 22.13); si no, el servicio muere al arrancar.
-# Verifica el node que usará el servicio: en systemd sale del ExecStart de la unidad
-# (puede ser /usr/bin/node o un binario de nvm); en docker corre dentro de la imagen.
+# Node que usará el servicio: en systemd sale del ExecStart de la unidad (puede ser
+# /usr/bin/node o un binario de nvm); en docker corre dentro de la imagen. GitHub Actions
+# entra por SSH sin cargar nvm, así que ponemos ese Node al frente del PATH para que
+# "npm ci" use su npm (uno viejo no lee bien el package-lock.json).
+NODE_BIN=node
+if [ "$MODO" = "systemd" ] && [ -f /etc/systemd/system/abasto.service ]; then
+  N="$(awk -F= '/^ExecStart=/{print $2; exit}' /etc/systemd/system/abasto.service | awk '{print $1}')"
+  [ -x "$N" ] && NODE_BIN="$N"
+fi
 if [ "$MODO" != "docker" ]; then
-  NODE_BIN=node
-  if [ "$MODO" = "systemd" ] && [ -f /etc/systemd/system/abasto.service ]; then
-    N="$(awk -F= '/^ExecStart=/{print $2; exit}' /etc/systemd/system/abasto.service | awk '{print $1}')"
-    [ -x "$N" ] && NODE_BIN="$N"
-  fi
+  export PATH="$(dirname "$NODE_BIN"):$PATH"
+fi
+
+# La app depende de node:sqlite (Node >= 22.13); si no, el servicio muere al arrancar.
+if [ "$MODO" != "docker" ]; then
   if ! "$NODE_BIN" -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=13)?0:1)' 2>/dev/null; then
     echo "[deploy] ERROR: $NODE_BIN ($("$NODE_BIN" --version 2>/dev/null | tr -d '\n')) es demasiado viejo; se requiere Node >= 22.13" >&2
     exit 1
@@ -64,6 +70,7 @@ case "$MODO" in
       abasto-cloud
     ;;
   systemd)
+    rm -rf node_modules          # instalación limpia: evita node_modules de otro npm/versión
     npm ci --omit=dev
     systemctl restart abasto
     ;;
