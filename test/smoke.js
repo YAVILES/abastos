@@ -270,7 +270,7 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
     assert.ok(cPedro.eventos.some((x) => x.tipo === 'cambio'), 'todos se enteran de que el pedido volvió a estar disponible');
     cJuan.cerrar(); cPedro.cerrar();
   }
-  await falla(api('POST', `/api/reparto/ordenes/${oid}/entregar`, {}, tokJuan), 409, /Primero marca/);
+  await falla(api('POST', `/api/reparto/ordenes/${oid}/entregar`, {}, tokJuan), 409, /Primero toma/); // sin dueño no se puede entregar
   await ok(api('POST', `/api/reparto/ordenes/${oid}/tomar`, {}, tokJuan));
   await falla(api('POST', `/api/reparto/ordenes/${oid}/tomar`, {}, tokPedro), 409, /Otro repartidor/);
   assert.equal((await ok(api('GET', '/api/reparto/mis', null, tokPedro))).disponibles.length, 0, 'ya no aparece para los demás');
@@ -285,7 +285,6 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
     assert.equal(cli.orden.estado, 'retirada'); assert.match(cli.semaforo.mensaje, /retiró/); assert.ok(cli.orden.retirado_en);
     assert.ok(cli.semaforo.pasos.includes('Retirado de la tienda'));
     await falla(api('POST', `/api/reparto/ordenes/${oid}/retirar`, {}, tokJuan), 409, /ya fue retirado/);
-    await falla(api('POST', `/api/reparto/ordenes/${oid}/entregar`, {}, tokJuan), 409, /Primero marca/);
     await falla(api('POST', `/api/ordenes/${oid}/asignar`, { repartidor_id: null }), 409, /ya fue retirado/);
   }
   await falla(api('POST', `/api/reparto/ordenes/${oid}/salir`, {}, tokPedro), 409, /otro repartidor/);
@@ -311,16 +310,23 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
     const o2 = (await ok(api('POST', `/api/pedidos/${ped2.id}/validar-pago`, { pago_id: d2.pagos[0].id }))).orden_id;
     await ok(api('POST', `/api/ordenes/${o2}/preparar/iniciar`, {}));
     await ok(api('POST', `/api/ordenes/${o2}/preparar/escanear`, { codigo: barraP1 }));
-    for (const e of ['preparada', 'lista_envio']) await ok(api('POST', `/api/ordenes/${o2}/estado`, { estado: e }));
-    await falla(api('POST', `/api/reparto/ordenes/${o2}/rechazar`, { motivo: 'x' }, tokPedro), 409, /ya salió en camino/);
-    await ok(api('POST', `/api/reparto/ordenes/${o2}/tomar`, {}, tokPedro));
+    await ok(api('POST', `/api/ordenes/${o2}/estado`, { estado: 'preparada' }));
+    // un pedido preparado y asignado ya lo puede gestionar su repartidor, sin esperar a que el negocio lo marque "listo para envío"
+    const pedroId = (await ok(api('GET', '/api/repartidores'))).find((x) => x.usuario === 'pedro').id;
+    await falla(api('POST', `/api/reparto/ordenes/${o2}/retirar`, {}, tokPedro), 409, /todavía no está listo/); // sin asignar, no
+    await ok(api('POST', `/api/ordenes/${o2}/asignar`, { repartidor_id: pedroId }));
+    const misPre = await ok(api('GET', '/api/reparto/mis', null, tokPedro));
+    assert.ok(misPre.asignados.some((x) => x.id === o2), 'aparece en Por buscar con sus botones'); assert.ok(!misPre.proximos.some((x) => x.id === o2));
+    await falla(api('POST', `/api/reparto/ordenes/${o2}/retirar`, {}, tokJuan), 409, /otro repartidor/);
+    await falla(api('POST', `/api/reparto/ordenes/${o2}/rechazar`, { motivo: 'x' }, tokPedro), 409, /ya retiraste/); // rechazar es después de retirar
     await ok(api('POST', `/api/reparto/ordenes/${o2}/retirar`, {}, tokPedro));
+    await falla(api('POST', `/api/reparto/ordenes/${o2}/retirar`, {}, tokPedro), 409, /ya fue retirado/);
     await ok(api('POST', `/api/reparto/ordenes/${o2}/salir`, {}, tokPedro));
     await falla(api('POST', `/api/reparto/ordenes/${o2}/rechazar`, { motivo: 'No había nadie' }, tokJuan), 409, /otro repartidor/);
     await falla(api('POST', `/api/reparto/ordenes/${o2}/rechazar`, {}, tokPedro), 400, /Indica por qué/);
     await ok(api('POST', `/api/reparto/ordenes/${o2}/rechazar`, { motivo: 'No había nadie para recibirlo', nota: 'tocó tres veces' }, tokPedro));
     await falla(api('POST', `/api/reparto/ordenes/${o2}/rechazar`, { motivo: 'otra vez' }, tokPedro), 409, /ya fue marcado/);
-    await falla(api('POST', `/api/reparto/ordenes/${o2}/entregar`, {}, tokPedro), 409, /Primero marca/);
+    await falla(api('POST', `/api/reparto/ordenes/${o2}/entregar`, {}, tokPedro), 409, /rechazado/);
     const cli2 = await ok(api('GET', '/api/app/pedidos/' + ped2.id, null, ct));
     assert.equal(cli2.orden.estado, 'rechazada'); assert.equal(cli2.semaforo.color, 'rojo'); assert.match(cli2.semaforo.mensaje, /rechazado/);
     const misP = await ok(api('GET', '/api/reparto/mis', null, tokPedro));
@@ -334,6 +340,21 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
     assert.ok((await ok(api('GET', '/api/reparto/mis', null, tokJuan))).disponibles.some((x) => x.id === o2), 'vuelve a estar disponible');
     assert.equal((await ok(api('GET', '/api/app/pedidos/' + ped2.id, null, ct))).orden.estado, 'lista_envio');
     await ok(api('POST', `/api/pedidos/${ped2.id}/cancelar`, { motivo: 'prueba de rechazo' })); // o se cancela: se anula la venta y el stock vuelve
+    // si al repartidor se le pasa marcar el retiro y la salida, puede ir directo a "entregado": los pasos intermedios quedan con la misma hora
+    const ped3 = await ok(api('POST', '/api/app/pedidos', { items: [{ producto_id: p1, cantidad: 1 }], entrega: 'envio', contacto: 'Rosa', telefono: '04245556677', zona: 'Norte', direccion: 'Calle 10' }, ct));
+    await ok(api('POST', `/api/app/pedidos/${ped3.id}/pago`, { medio_app_id: medio.id, monto: 52, banco_emisor: 'Provincial', referencia: 'REF-RZ-2' }, ct));
+    const d3 = await ok(api('GET', '/api/app/pedidos/' + ped3.id, null, ct));
+    const o3 = (await ok(api('POST', `/api/pedidos/${ped3.id}/validar-pago`, { pago_id: d3.pagos[0].id }))).orden_id;
+    await ok(api('POST', `/api/ordenes/${o3}/preparar/iniciar`, {}));
+    await ok(api('POST', `/api/ordenes/${o3}/preparar/escanear`, { codigo: barraP1 }));
+    await ok(api('POST', `/api/ordenes/${o3}/estado`, { estado: 'preparada' }));
+    const pedroId3 = (await ok(api('GET', '/api/repartidores'))).find((x) => x.usuario === 'pedro').id;
+    await ok(api('POST', `/api/ordenes/${o3}/asignar`, { repartidor_id: pedroId3 }));
+    await falla(api('POST', `/api/reparto/ordenes/${o3}/entregar`, {}, tokJuan), 409, /otro repartidor/);
+    await ok(api('POST', `/api/reparto/ordenes/${o3}/entregar`, { receptor: 'Rosa' }, tokPedro));
+    const fin3 = await ok(api('GET', '/api/ordenes/' + o3, null));
+    assert.equal(fin3.orden.estado, 'entregada'); assert.ok(fin3.orden.retirado_en && fin3.orden.salida_en && fin3.orden.entregado_en); assert.equal(fin3.orden.retirado_en, fin3.orden.salida_en);
+    assert.equal((await ok(api('GET', '/api/app/pedidos/' + ped3.id, null, ct))).estado, 'entregado');
   }
   det = await ok(api('GET', '/api/app/pedidos/' + ped.id, null, ct));
   assert.equal(det.estado, 'entregado');

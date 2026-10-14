@@ -85,7 +85,8 @@ async function api(req, res, url) {
       if (!u) throw new L.HttpError(401, 'Sesión vencida: inicia sesión de nuevo');
       ctx.user = u; ctx.perms = permisosDe(u.rol);
       // un repartidor no ve ventas, clientes ni inventario: solo su API de reparto
-      if (u.rol === 'repartidor' && !url.pathname.startsWith('/api/reparto/') && !['/api/me', '/api/logout', '/api/me/clave'].includes(url.pathname)) throw new L.HttpError(403, 'No tienes permiso para esta acción');
+      const soloReparto = u.rol === 'repartidor' || (ctx.perms.has('reparto.operar') && ![...ctx.perms].some((p) => p.startsWith('mod.'))); // también un rol propio que solo tenga la app de reparto
+      if (soloReparto && !url.pathname.startsWith('/api/reparto/') && !['/api/me', '/api/logout', '/api/me/clave'].includes(url.pathname)) throw new L.HttpError(403, 'No tienes permiso para esta acción');
       if (ruta.perm && !ctx.perms.has(ruta.perm)) throw new L.HttpError(403, 'No tienes permiso para esta acción');
     } else if (ruta.scope === 'cli') {
       const ses = sesionDe(token, 'cli');

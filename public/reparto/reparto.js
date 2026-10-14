@@ -57,7 +57,7 @@
       ev.preventDefault(); const f = ev.target;
       try {
         const r = await api('POST', '/api/login', { empresa: f.empresa ? f.empresa.value.trim().toLowerCase() : (slug || undefined), usuario: f.usuario.value, clave: f.clave.value });
-        if (r.usuario.rol !== 'repartidor' && !['admin', 'supervisor'].includes(r.usuario.rol)) throw new Error('Este usuario no es de reparto');
+        // quién puede usar la app lo decide el servidor según los permisos del rol (también sirven los roles propios con el permiso de reparto)
         token = r.token; ls.set(K('token'), token); primeraCarga = true; pintar();
       } catch (er) { $('#le').textContent = er.message; }
     };
@@ -110,10 +110,17 @@
   const mapa = (o) => 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent([o.direccion, o.zona].filter(Boolean).join(', '));
   // Los tres estados que maneja el repartidor, con el que lleva el pedido marcado
   function pasosRep(o, tipo) {
-    if (tipo === 'preparando') return '';
     const rechazada = o.estado === 'rechazada';
-    const hechos = { lista_envio: 0, retirada: 1, enviada: 2, entregada: 3, rechazada: 2 }[o.estado] ?? 0;
-    return `<div class="pasos-rep">${['Retirado de la tienda', 'En camino', rechazada ? 'Rechazado' : 'Entregado'].map((t, i) => (rechazada && i === 2 ? `<span class="mal">✖ ${t}</span>` : `<span class="${i < hechos ? 'hecho' : i === hechos ? 'actual' : ''}">${i < hechos ? '✔ ' : ''}${t}</span>`)).join('')}</div>`;
+    const hechos = { lista_envio: 0, preparada: 0, retirada: 1, enviada: 2, entregada: 3, rechazada: 2 }[o.estado] ?? 0;
+    const pasos = [['retirar', 'Retirado de la tienda'], ['salir', 'En camino'], ['entregar', rechazada ? 'Rechazado' : 'Entregado']];
+    // se gestiona solo lo que ya es mío y está listo; lo demás se ve, pero apagado
+    const gestiona = (tipo === 'buscar' && o.repartidor_id) || tipo === 'camino';
+    return `<div class="pasos-rep">${pasos.map(([a, t], i) => {
+      if (rechazada && i === 2) return `<span class="mal">✖ ${t}</span>`;
+      const hecho = i < hechos, actual = i === hechos;
+      if (!gestiona || hecho) return `<span class="${hecho ? 'hecho' : actual ? 'actual' : ''}">${hecho ? '✔ ' : ''}${t}</span>`;
+      return `<button class="paso ${actual ? 'actual' : ''}" data-a="${a}" data-id="${o.id}" data-p="${e(o.pedido)}">${t}</button>`;
+    }).join('')}</div>${gestiona && ['retirada', 'enviada'].includes(o.estado) ? `<div class="acc"><button class="btn bad sm" data-a="rechazar" data-id="${o.id}" data-p="${e(o.pedido)}">✖ El cliente rechazó el pedido</button></div>` : ''}`;
   }
   function tarjeta(o, tipo) {
     const contacto = o.contacto || o.cliente, t = o.tel_contacto || o.tel_cliente;
@@ -128,8 +135,7 @@
       ${tipo === 'entregado' ? (o.estado === 'rechazada' ? `<div class="muted" style="margin-top:6px">Rechazado ${e((o.rechazado_en || '').slice(11, 16))} · ${e(o.motivo_rechazo || '')}</div>` : `<div class="muted" style="margin-top:6px">Entregado ${e((o.entregado_en || '').slice(11, 16))}${o.receptor ? ' a ' + e(o.receptor) : ''}</div>`) : ''}
       <div class="acc">${t ? `<a class="btn" href="tel:${tel(t)}">📞 Llamar</a><a class="btn" target="_blank" href="https://wa.me/${wa(t)}">WhatsApp</a>` : ''}<a class="btn" target="_blank" href="${mapa(o)}">🗺 Mapa</a></div>
       ${tipo === 'preparando' ? '<div class="muted" style="margin-top:6px">Aún no está listo: te avisaremos cuando puedas pasar a buscarlo.</div>' : ''}
-      ${tipo === 'buscar' ? `<div class="acc">${o.repartidor_id ? '' : `<button class="btn" data-a="tomar" data-id="${o.id}">Tomar este pedido</button>`}<button class="btn pri" data-a="retirar" data-id="${o.id}">✔ Retirado de la tienda</button></div>` : ''}
-      ${tipo === 'camino' ? `<div class="acc">${o.estado === 'retirada' ? `<button class="btn pri" data-a="salir" data-id="${o.id}">🛵 Salir en camino</button>` : `<button class="btn pri" data-a="entregar" data-id="${o.id}" data-p="${e(o.pedido)}">✔ Entregado</button><button class="btn bad" data-a="rechazar" data-id="${o.id}" data-p="${e(o.pedido)}">✖ Rechazado</button>`}</div>` : ''}</div>`;
+      ${tipo === 'buscar' && !o.repartidor_id ? `<div class="acc"><button class="btn pri" data-a="tomar" data-id="${o.id}">Tomar este pedido</button></div><div class="muted" style="font-size:12px">Tómalo para poder marcar sus estados.</div>` : ''}</div>`;
   }
   const sim = { USD: '$', VES: 'Bs ', EUR: '€' };
   const din = (n, mo) => (sim[mo] || '') + Number(n).toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });

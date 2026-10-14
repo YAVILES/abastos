@@ -1122,8 +1122,8 @@ staff('GET', '/api/reparto/mis', 'reparto.operar', ({ user }) => {
   return {
     ahora: D.ahora(), repartidor: user.nombre,
     disponibles: D.all(`${SQL_REPARTO} WHERE o.tipo='envio' AND o.estado='lista_envio' AND o.repartidor_id IS NULL ORDER BY o.actualizado, o.id`),
-    asignados: D.all(`${SQL_REPARTO} WHERE o.tipo='envio' AND o.estado='lista_envio' AND o.repartidor_id=? ORDER BY o.actualizado, o.id`, yo),
-    proximos: D.all(`${SQL_REPARTO} WHERE o.tipo='envio' AND o.estado IN ('por_preparar','en_preparacion','preparada') AND o.repartidor_id=? ORDER BY o.id`, yo),
+    asignados: D.all(`${SQL_REPARTO} WHERE o.tipo='envio' AND o.estado IN ('preparada','lista_envio') AND o.repartidor_id=? ORDER BY o.actualizado, o.id`, yo),
+    proximos: D.all(`${SQL_REPARTO} WHERE o.tipo='envio' AND o.estado IN ('por_preparar','en_preparacion') AND o.repartidor_id=? ORDER BY o.id`, yo),
     retirados: D.all(`${SQL_REPARTO} WHERE o.estado='retirada' AND o.repartidor_id=? ORDER BY o.retirado_en, o.id`, yo),
     en_camino: D.all(`${SQL_REPARTO} WHERE o.estado='enviada' AND o.repartidor_id=? ORDER BY o.salida_en, o.id`, yo),
     // terminados hoy: entregados y rechazados por el cliente
@@ -1144,46 +1144,60 @@ staff('POST', '/api/reparto/ordenes/:id/tomar', 'reparto.operar', ({ params, use
   avisarReparto({ tipo: 'cambio' });
   return { ok: true };
 }));
-// 1.º estado del repartidor: retiró el pedido de la tienda (queda con él, todavía no sale)
-staff('POST', '/api/reparto/ordenes/:id/retirar', 'reparto.operar', ({ params, user }) => D.tx(() => {
-  const o = D.get('SELECT * FROM ordenes_entrega WHERE id=?', params.id);
+// Los estados que maneja el repartidor: retirado de la tienda → en camino → entregado (o rechazado por el cliente).
+// Puede marcarlos en orden o, si se le pasó alguno, saltar directo al que corresponde: los pasos intermedios quedan registrados con la misma hora.
+// Un pedido "preparado" ya lo puede gestionar el repartidor al que se le asignó, sin esperar a que el negocio lo marque "listo para envío".
+const ORDEN_REPARTO = ['lista_envio', 'preparada', 'retirada', 'enviada', 'entregada'];
+function pasoReparto(id, user, destino, extra = {}) {
+  const o = D.get('SELECT * FROM ordenes_entrega WHERE id=?', id);
   if (!o || o.tipo !== 'envio') err(404, 'Pedido no encontrado');
-  if (o.estado === 'retirada') err(409, 'Este pedido ya fue retirado de la tienda');
-  if (o.estado !== 'lista_envio') err(409, ['enviada', 'entregada'].includes(o.estado) ? 'Este pedido ya salió de la tienda' : 'Este pedido todavía no está listo para enviar');
+  const MSG = {
+    retirada: { retirada: 'Este pedido ya fue retirado de la tienda', enviada: 'Este pedido ya salió de la tienda', entregada: 'Este pedido ya fue entregado' },
+    enviada: { enviada: 'Este pedido ya salió en camino', entregada: 'Este pedido ya fue entregado' },
+    entregada: { entregada: 'Este pedido ya fue entregado' }
+  };
+  if (o.estado === 'cancelada') err(409, 'Este pedido fue cancelado');
+  if (o.estado === 'rechazada') err(409, destino === 'rechazada' ? 'Este pedido ya fue marcado como rechazado' : 'Este pedido fue rechazado: espera a que el negocio lo reprograme');
+  if (MSG[destino] && MSG[destino][o.estado]) err(409, MSG[destino][o.estado]);
+  const desde = destino === 'rechazada' ? ['retirada', 'enviada'] : ORDEN_REPARTO.slice(0, ORDEN_REPARTO.indexOf(destino));
+  if (!desde.includes(o.estado)) {
+    if (destino === 'rechazada') err(409, o.estado === 'entregada' ? 'Este pedido ya fue entregado' : 'Solo se puede rechazar un pedido que ya retiraste de la tienda');
+    err(409, 'Este pedido todavía no está listo para enviar');
+  }
+  // un pedido preparado solo lo gestiona quien lo tiene asignado; uno listo sin dueño lo toma quien lo marca
+  if (o.estado === 'preparada' && o.repartidor_id !== user.id) err(409, o.repartidor_id ? 'Este pedido está asignado a otro repartidor' : 'Este pedido todavía no está listo para enviar');
   if (o.repartidor_id && o.repartidor_id !== user.id) err(409, 'Este pedido está asignado a otro repartidor');
-  const u = quienEs(user.id);
-  D.run("UPDATE ordenes_entrega SET estado='retirada', repartidor_id=?, repartidor=?, repartidor_tel=?, asignado_en=COALESCE(asignado_en, ?), retirado_en=?, actualizado=? WHERE id=?",
-    user.id, u.nombre, u.telefono || null, D.ahora(), D.ahora(), D.ahora(), o.id);
-  L.audit(user.usuario, 'reparto_retirado', 'orden', o.id, o.numero);
+  if (destino === 'entregada' && !o.repartidor_id) err(409, 'Primero toma este pedido y retíralo de la tienda');
+  const u = quienEs(user.id), ahora = D.ahora();
+  const dueno = [user.id, u.nombre, u.telefono || null, ahora]; // repartidor_id, repartidor, repartidor_tel, asignado_en
+  if (destino === 'retirada') {
+    D.run("UPDATE ordenes_entrega SET estado='retirada', repartidor_id=?, repartidor=?, repartidor_tel=?, asignado_en=COALESCE(asignado_en, ?), retirado_en=?, actualizado=? WHERE id=?", ...dueno, ahora, ahora, o.id);
+    L.audit(user.usuario, 'reparto_retirado', 'orden', o.id, o.numero);
+  } else if (destino === 'enviada') {
+    D.run("UPDATE ordenes_entrega SET estado='enviada', repartidor_id=?, repartidor=?, repartidor_tel=?, asignado_en=COALESCE(asignado_en, ?), retirado_en=COALESCE(retirado_en, ?), salida_en=?, actualizado=? WHERE id=?", ...dueno, ahora, ahora, ahora, o.id);
+    L.audit(user.usuario, 'reparto_en_camino', 'orden', o.id, o.numero);
+  } else if (destino === 'entregada') {
+    D.run("UPDATE ordenes_entrega SET estado='entregada', repartidor_id=?, repartidor=?, repartidor_tel=?, asignado_en=COALESCE(asignado_en, ?), retirado_en=COALESCE(retirado_en, ?), salida_en=COALESCE(salida_en, ?), entregado_en=?, receptor=?, nota_entrega=?, actualizado=? WHERE id=?",
+      ...dueno, ahora, ahora, ahora, s(extra.receptor), s(extra.nota), ahora, o.id);
+    D.run("UPDATE pedidos SET estado='entregado' WHERE id=?", o.pedido_id);
+    L.audit(user.usuario, 'reparto_entregado', 'orden', o.id, { receptor: s(extra.receptor) });
+  } else {
+    D.run("UPDATE ordenes_entrega SET estado='rechazada', rechazado_en=?, motivo_rechazo=?, nota_entrega=COALESCE(?, nota_entrega), actualizado=? WHERE id=?", ahora, extra.motivo, s(extra.nota), ahora, o.id);
+    L.audit(user.usuario, 'reparto_rechazado', 'orden', o.id, { motivo: extra.motivo });
+  }
   avisarReparto({ tipo: 'cambio' });
   return { ok: true };
+}
+staff('POST', '/api/reparto/ordenes/:id/retirar', 'reparto.operar', ({ params, user }) => D.tx(() => pasoReparto(params.id, user, 'retirada')));
+staff('POST', '/api/reparto/ordenes/:id/salir', 'reparto.operar', ({ params, user }) => D.tx(() => pasoReparto(params.id, user, 'enviada')));
+staff('POST', '/api/reparto/ordenes/:id/entregar', 'reparto.operar', ({ params, body, user }) => D.tx(() => pasoReparto(params.id, user, 'entregada', body)));
+staff('POST', '/api/reparto/ordenes/:id/rechazar', 'reparto.operar', ({ params, body, user }) => D.tx(() => {
+  const motivo = req(body.motivo, 'Indica por qué el cliente rechazó el pedido');
+  return pasoReparto(params.id, user, 'rechazada', { motivo, nota: body.nota });
 }));
-staff('POST', '/api/reparto/ordenes/:id/salir', 'reparto.operar', ({ params, user }) => D.tx(() => {
-  const o = D.get('SELECT * FROM ordenes_entrega WHERE id=?', params.id);
-  if (!o || o.tipo !== 'envio') err(404, 'Pedido no encontrado');
-  // sale en camino lo que ya retiró de la tienda (por compatibilidad también un pedido listo, que se da por retirado en ese momento)
-  if (!['retirada', 'lista_envio'].includes(o.estado)) err(409, o.estado === 'enviada' ? 'Este pedido ya salió en camino' : 'Este pedido todavía no está listo para enviar');
-  if (o.repartidor_id && o.repartidor_id !== user.id) err(409, 'Este pedido está asignado a otro repartidor');
-  const u = quienEs(user.id);
-  D.run("UPDATE ordenes_entrega SET estado='enviada', repartidor_id=?, repartidor=?, repartidor_tel=?, asignado_en=COALESCE(asignado_en, ?), retirado_en=COALESCE(retirado_en, ?), salida_en=?, actualizado=? WHERE id=?",
-    user.id, u.nombre, u.telefono || null, D.ahora(), D.ahora(), D.ahora(), D.ahora(), o.id);
-  L.audit(user.usuario, 'reparto_en_camino', 'orden', o.id, o.numero);
-  avisarReparto({ tipo: 'cambio' });
-  return { ok: true };
-}));
-staff('POST', '/api/reparto/ordenes/:id/entregar', 'reparto.operar', ({ params, body, user }) => D.tx(() => {
-  const o = D.get('SELECT * FROM ordenes_entrega WHERE id=?', params.id);
-  if (!o) err(404, 'Pedido no encontrado');
-  if (o.estado === 'entregada') err(409, 'Este pedido ya fue entregado');
-  if (o.estado !== 'enviada') err(409, 'Primero marca que saliste en camino');
-  if (o.repartidor_id !== user.id) err(409, 'Este pedido está asignado a otro repartidor');
-  D.run("UPDATE ordenes_entrega SET estado='entregada', entregado_en=?, receptor=?, nota_entrega=?, actualizado=? WHERE id=?", D.ahora(), s(body.receptor), s(body.nota), D.ahora(), o.id);
-  D.run("UPDATE pedidos SET estado='entregado' WHERE id=?", o.pedido_id);
-  L.audit(user.usuario, 'reparto_entregado', 'orden', o.id, { receptor: s(body.receptor) });
-  avisarReparto({ tipo: 'cambio' });
-  return { ok: true };
-}));
-staff('GET', '/api/repartidores', 'pedidos.gestionar', () => D.all("SELECT id, nombre, usuario, telefono FROM usuarios WHERE rol='repartidor' AND activo=1 ORDER BY nombre"));
+// Repartidor = el rol base o cualquier rol propio al que se le haya dado el permiso de usar la app de reparto
+const ES_REPARTIDOR = `(rol='repartidor' OR rol IN (SELECT codigo FROM roles WHERE permisos LIKE '%"reparto.operar"%'))`;
+staff('GET', '/api/repartidores', 'pedidos.gestionar', () => D.all(`SELECT id, nombre, usuario, telefono FROM usuarios WHERE ${ES_REPARTIDOR} AND activo=1 ORDER BY nombre`));
 staff('POST', '/api/ordenes/:id/asignar', 'pedidos.gestionar', ({ params, body, user }) => D.tx(() => {
   const o = D.get('SELECT * FROM ordenes_entrega WHERE id=?', params.id);
   if (!o) err(404, 'Orden no encontrada');
@@ -1196,7 +1210,7 @@ staff('POST', '/api/ordenes/:id/asignar', 'pedidos.gestionar', ({ params, body, 
     avisarReparto({ tipo: 'cambio' });
     return { ok: true };
   }
-  const rep = D.get("SELECT id, nombre, telefono FROM usuarios WHERE id=? AND rol='repartidor' AND activo=1", body.repartidor_id);
+  const rep = D.get(`SELECT id, nombre, telefono FROM usuarios WHERE id=? AND ${ES_REPARTIDOR} AND activo=1`, body.repartidor_id);
   if (!rep) err(400, 'Selecciona un repartidor activo');
   D.run('UPDATE ordenes_entrega SET repartidor_id=?, repartidor=?, repartidor_tel=?, asignado_en=? WHERE id=?', rep.id, rep.nombre, rep.telefono || null, D.ahora(), o.id);
   L.audit(user.usuario, 'reparto_asignado', 'orden', o.id, { repartidor: rep.nombre });
@@ -1278,20 +1292,6 @@ staff('POST', '/api/ordenes/:id/preparar/deshacer', 'pedidos.gestionar', ({ para
   D.run('UPDATE preparacion_items SET escaneado=escaneado-?, manual=MAX(0, manual-?) WHERE id=?', quita, quita, l.id);
   L.audit(user.usuario, 'preparacion_deshacer', 'orden', o.id, { producto: l.nombre });
   return resumenPrep(o);
-}));
-// El cliente no recibió el pedido en la puerta: el repartidor lo marca rechazado con su motivo y el pedido queda pendiente de resolver en el sistema
-staff('POST', '/api/reparto/ordenes/:id/rechazar', 'reparto.operar', ({ params, body, user }) => D.tx(() => {
-  const o = D.get('SELECT * FROM ordenes_entrega WHERE id=?', params.id);
-  if (!o || o.tipo !== 'envio') err(404, 'Pedido no encontrado');
-  if (o.estado === 'rechazada') err(409, 'Este pedido ya fue marcado como rechazado');
-  if (o.estado === 'entregada') err(409, 'Este pedido ya fue entregado');
-  if (o.estado !== 'enviada') err(409, 'Solo se puede rechazar un pedido que ya salió en camino');
-  if (o.repartidor_id !== user.id) err(409, 'Este pedido está asignado a otro repartidor');
-  const motivo = req(body.motivo, 'Indica por qué el cliente rechazó el pedido');
-  D.run("UPDATE ordenes_entrega SET estado='rechazada', rechazado_en=?, motivo_rechazo=?, nota_entrega=COALESCE(?, nota_entrega), actualizado=? WHERE id=?", D.ahora(), motivo, s(body.nota), D.ahora(), o.id);
-  L.audit(user.usuario, 'reparto_rechazado', 'orden', o.id, { motivo });
-  avisarReparto({ tipo: 'cambio' });
-  return { ok: true };
 }));
 // Resolver una entrega rechazada: volver a intentarla (queda lista para que otro repartidor, o el mismo, la tome) o cancelar el pedido
 staff('POST', '/api/ordenes/:id/reprogramar', 'pedidos.gestionar', ({ params, body, user }) => D.tx(() => {
