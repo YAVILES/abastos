@@ -589,19 +589,21 @@ function liberarReservas(pedido_id, estado = 'liberada') {
 function semaforo(p, orden) {
   const envio = p.entrega === 'envio';
   const pasos = ['Pedido creado', 'Soporte de pago recibido', 'Pago en validación', 'Pago validado', 'En preparación',
-    envio ? 'Listo para envío' : 'Listo para retiro', ...(envio ? ['En camino'] : []), 'Entregado'];
+    envio ? 'Listo para envío' : 'Listo para retiro', ...(envio ? ['Retirado de la tienda', 'En camino'] : []), 'Entregado'];
   let idx = 0, color = 'amarillo', mensaje = 'Esperando tu reporte de pago.';
   if (p.estado === 'pendiente') { idx = 0; color = 'amarillo'; }
   else if (p.estado === 'pago_reportado') { idx = 2; color = 'amarillo'; mensaje = 'Recibimos tu soporte. Estamos validando el pago.'; }
   else if (['pagado', 'entregado'].includes(p.estado)) {
     color = 'verde'; mensaje = 'Pago validado.';
     const e = orden ? orden.estado : 'por_preparar';
-    idx = { por_preparar: 3, en_preparacion: 4, preparada: 5, lista_retiro: 5, lista_envio: 5, enviada: envio ? 6 : 5, entregada: pasos.length - 1 }[e] ?? 3;
+    idx = { por_preparar: 3, en_preparacion: 4, preparada: 5, lista_retiro: 5, lista_envio: 5, retirada: envio ? 6 : 5, enviada: envio ? 7 : 5, rechazada: envio ? 7 : 5, entregada: pasos.length - 1 }[e] ?? 3;
     if (e === 'por_preparar') mensaje = 'Pago validado. Tu pedido pasa a preparación.';
     if (e === 'en_preparacion') mensaje = 'Estamos preparando tu pedido.';
     if (e === 'lista_retiro') mensaje = 'Tu pedido está listo para retirar en tienda.';
     if (e === 'lista_envio') mensaje = 'Tu pedido está listo para ser enviado.';
+    if (e === 'retirada') mensaje = 'El repartidor ya retiró tu pedido de la tienda y saldrá en camino.';
     if (e === 'enviada') mensaje = 'Tu pedido va en camino.';
+    if (e === 'rechazada') { color = 'rojo'; mensaje = 'La entrega no se concretó porque el pedido fue rechazado. El negocio se comunicará contigo.'; }
     if (e === 'entregada') mensaje = 'Pedido entregado. ¡Gracias por tu compra!';
   } else if (p.estado === 'rechazado') { idx = 2; color = 'rojo'; mensaje = 'Pago rechazado: ' + (p.motivo || 'revisa los datos del pago.'); }
   else if (p.estado === 'vencido') { idx = 0; color = 'rojo'; mensaje = 'La reserva venció y el stock fue liberado.'; }

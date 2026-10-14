@@ -108,20 +108,28 @@
   const tel = (t) => String(t || '').replace(/\D/g, '');
   const wa = (t) => { const d = tel(t); return d.startsWith('0') ? '58' + d.slice(1) : d; };
   const mapa = (o) => 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent([o.direccion, o.zona].filter(Boolean).join(', '));
+  // Los tres estados que maneja el repartidor, con el que lleva el pedido marcado
+  function pasosRep(o, tipo) {
+    if (tipo === 'preparando') return '';
+    const rechazada = o.estado === 'rechazada';
+    const hechos = { lista_envio: 0, retirada: 1, enviada: 2, entregada: 3, rechazada: 2 }[o.estado] ?? 0;
+    return `<div class="pasos-rep">${['Retirado de la tienda', 'En camino', rechazada ? 'Rechazado' : 'Entregado'].map((t, i) => (rechazada && i === 2 ? `<span class="mal">✖ ${t}</span>` : `<span class="${i < hechos ? 'hecho' : i === hechos ? 'actual' : ''}">${i < hechos ? '✔ ' : ''}${t}</span>`)).join('')}</div>`;
+  }
   function tarjeta(o, tipo) {
     const contacto = o.contacto || o.cliente, t = o.tel_contacto || o.tel_cliente;
     const nuevo = tipo === 'buscar' && !o.visto;
     return `<div class="entrega ${nuevo ? '' : ''}"><div class="row" style="justify-content:space-between;align-items:center"><b>${e(o.pedido)} · ${e(o.orden)}</b>
-        <span>${tipo === 'preparando' ? '<span class="tag info">Asignado a ti · se está preparando</span>' : tipo === 'buscar' ? (o.repartidor_id ? '<span class="tag info">Asignado a ti</span>' : '<span class="tag warn">Disponible</span>') : tipo === 'camino' ? '<span class="tag ok">En camino</span>' : '<span class="tag ok">Entregado</span>'}</span></div>
+        <span>${tipo === 'preparando' ? '<span class="tag info">Asignado a ti · se está preparando</span>' : tipo === 'buscar' ? (o.repartidor_id ? '<span class="tag info">Asignado a ti</span>' : '<span class="tag warn">Disponible</span>') : tipo === 'camino' ? (o.estado === 'retirada' ? '<span class="tag info">Retirado de la tienda</span>' : '<span class="tag ok">En camino</span>') : (o.estado === 'rechazada' ? '<span class="tag bad">Rechazado</span>' : '<span class="tag ok">Entregado</span>')}</span></div>
       <div class="dir">${e(o.direccion || 'Sin dirección')}${o.zona ? ' — ' + e(o.zona) : ''}</div>
+      ${pasosRep(o, tipo)}
       ${cobro(o)}
       ${o.referencia_entrega ? `<div class="muted">Referencia: ${e(o.referencia_entrega)}</div>` : ''}
       <div style="margin-top:6px">${e(contacto)} · <b>${fmUn(o.unidades)}</b></div>${o.nota ? `<div class="muted">Nota: ${e(o.nota)}</div>` : ''}
-      ${tipo === 'entregado' ? `<div class="muted" style="margin-top:6px">Entregado ${e((o.entregado_en || '').slice(11, 16))}${o.receptor ? ' a ' + e(o.receptor) : ''}</div>` : ''}
+      ${tipo === 'entregado' ? (o.estado === 'rechazada' ? `<div class="muted" style="margin-top:6px">Rechazado ${e((o.rechazado_en || '').slice(11, 16))} · ${e(o.motivo_rechazo || '')}</div>` : `<div class="muted" style="margin-top:6px">Entregado ${e((o.entregado_en || '').slice(11, 16))}${o.receptor ? ' a ' + e(o.receptor) : ''}</div>`) : ''}
       <div class="acc">${t ? `<a class="btn" href="tel:${tel(t)}">📞 Llamar</a><a class="btn" target="_blank" href="https://wa.me/${wa(t)}">WhatsApp</a>` : ''}<a class="btn" target="_blank" href="${mapa(o)}">🗺 Mapa</a></div>
       ${tipo === 'preparando' ? '<div class="muted" style="margin-top:6px">Aún no está listo: te avisaremos cuando puedas pasar a buscarlo.</div>' : ''}
-      ${tipo === 'buscar' ? `<div class="acc">${o.repartidor_id ? '' : `<button class="btn" data-a="tomar" data-id="${o.id}">Tomar este pedido</button>`}<button class="btn pri" data-a="salir" data-id="${o.id}">Lo recogí: salir en camino</button></div>` : ''}
-      ${tipo === 'camino' ? `<div class="acc"><button class="btn pri" data-a="entregar" data-id="${o.id}" data-p="${e(o.pedido)}">✔ Entregado</button></div>` : ''}</div>`;
+      ${tipo === 'buscar' ? `<div class="acc">${o.repartidor_id ? '' : `<button class="btn" data-a="tomar" data-id="${o.id}">Tomar este pedido</button>`}<button class="btn pri" data-a="retirar" data-id="${o.id}">✔ Retirado de la tienda</button></div>` : ''}
+      ${tipo === 'camino' ? `<div class="acc">${o.estado === 'retirada' ? `<button class="btn pri" data-a="salir" data-id="${o.id}">🛵 Salir en camino</button>` : `<button class="btn pri" data-a="entregar" data-id="${o.id}" data-p="${e(o.pedido)}">✔ Entregado</button><button class="btn bad" data-a="rechazar" data-id="${o.id}" data-p="${e(o.pedido)}">✖ Rechazado</button>`}</div>` : ''}</div>`;
   }
   const sim = { USD: '$', VES: 'Bs ', EUR: '€' };
   const din = (n, mo) => (sim[mo] || '') + Number(n).toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -136,8 +144,8 @@
   function dibujar() {
     if (!datos) return;
     const buscar = [...datos.asignados, ...datos.disponibles];
-    const tabs = [['buscar', 'Por buscar', buscar.length + datos.proximos.length], ['camino', 'En camino', datos.en_camino.length], ['entregados', 'Entregados hoy', datos.entregados.length]];
-    const lista = pestana === 'buscar' ? buscar : pestana === 'camino' ? datos.en_camino : datos.entregados;
+    const tabs = [['buscar', 'Por buscar', buscar.length + datos.proximos.length], ['camino', 'Retirados y en camino', (datos.retirados || []).length + datos.en_camino.length], ['entregados', 'Terminados hoy', datos.entregados.length]];
+    const lista = pestana === 'buscar' ? buscar : pestana === 'camino' ? [...(datos.retirados || []), ...datos.en_camino] : datos.entregados;
     const tipo = pestana === 'buscar' ? 'buscar' : pestana === 'camino' ? 'camino' : 'entregado';
     const notif = 'Notification' in window && Notification.permission === 'default';
     $('#r').innerHTML = `<div class="r-head"><b>🛵 ${e(datos.repartidor)}</b><button class="btn sm" data-a="sonido">${sonido ? '🔔 Aviso' : '🔕 Silencio'}</button><button class="btn sm" data-a="logout">Salir</button></div>
@@ -159,11 +167,27 @@
       else if (b.dataset.a === 'logout') { try { await api('POST', '/api/logout'); } catch {} salir(); }
       else if (b.dataset.a === 'notif') { await Notification.requestPermission(); dibujar(); }
       else if (b.dataset.a === 'tomar') { b.disabled = true; await api('POST', `/api/reparto/ordenes/${id}/tomar`); toast('Pedido tomado: es tuyo', 'ok'); await cargar(); }
-      else if (b.dataset.a === 'salir') {
+      else if (b.dataset.a === 'retirar') {
+        b.disabled = true; await api('POST', `/api/reparto/ordenes/${id}/retirar`); toast('Retirado de la tienda. Cuando salgas, márcalo en camino.', 'ok'); pestana = 'camino'; ls.set(K('pestana'), pestana); await cargar();
+      } else if (b.dataset.a === 'salir') {
         b.disabled = true; await api('POST', `/api/reparto/ordenes/${id}/salir`); toast('En camino. ¡Buen viaje!', 'ok'); pestana = 'camino'; ls.set(K('pestana'), pestana); await cargar();
       } else if (b.dataset.a === 'entregar') entregar(id, b.dataset.p);
+      else if (b.dataset.a === 'rechazar') rechazar(id, b.dataset.p);
     } catch (er) { falla(er); b.disabled = false; await cargar(); }
   });
+  // El cliente no recibió el pedido: se marca rechazado con el motivo y el negocio decide qué hacer
+  function rechazar(id, pedido) {
+    const v = document.createElement('div'); v.className = 'velo';
+    const motivos = ['El cliente no quiso el pedido', 'No había nadie para recibirlo', 'Dirección incorrecta o no se pudo ubicar', 'El producto no era lo que esperaba', 'No tenía el dinero para pagar', 'Otro motivo'];
+    v.innerHTML = `<div class="modal"><header><span>Rechazado ${e(pedido)}</span><button class="btn sm" data-x>✕</button></header><div class="cuerpo"><form id="rf" class="form"><div class="full"><label>¿Por qué no se entregó? *</label><select name="motivo" required>${motivos.map((m) => `<option>${e(m)}</option>`).join('')}</select></div><div class="full"><label>Detalle (opcional)</label><input name="nota" placeholder="Ej. dice que lo pidió otra persona" autocomplete="off"></div><div class="muted full" style="font-size:12px">Llévate el pedido de vuelta. El negocio decidirá si lo reprograma o lo cancela.</div><div id="re" class="bad full"></div><div class="full"><button class="btn bad lg" style="width:100%">Confirmar: pedido rechazado</button></div></form></div></div>`;
+    document.body.appendChild(v);
+    v.querySelector('[data-x]').onclick = () => v.remove();
+    v.querySelector('#rf').onsubmit = async (ev) => {
+      ev.preventDefault(); const f = ev.target;
+      try { await api('POST', `/api/reparto/ordenes/${id}/rechazar`, { motivo: f.motivo.value, nota: f.nota.value }); v.remove(); toast('Marcado como rechazado. Devuelve el pedido a la tienda.', 'ok'); pestana = 'entregados'; ls.set(K('pestana'), pestana); await cargar(); }
+      catch (er) { v.querySelector('#re').textContent = er.message; }
+    };
+  }
   function entregar(id, pedido) {
     const v = document.createElement('div'); v.className = 'velo';
     v.innerHTML = `<div class="modal"><header><span>Entregar ${e(pedido)}</span><button class="btn sm" data-x>✕</button></header><div class="cuerpo"><form id="ef" class="form"><div class="full"><label>¿Quién recibió? (opcional)</label><input name="receptor" autocomplete="off"></div><div class="full"><label>Nota (opcional)</label><input name="nota" placeholder="Ej. se dejó con el vigilante" autocomplete="off"></div><div id="ee" class="bad full"></div><div class="full"><button class="btn pri lg" style="width:100%">Confirmar entrega</button></div></form></div></div>`;
