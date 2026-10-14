@@ -74,7 +74,14 @@
     }
     A.acciones(root, {
       kardex: async (el) => { const p = rows[+el.dataset.i]; const k = await api.get(`/api/productos/${p.id}/kardex`);
-        A.modal('Kardex — ' + p.nombre, A.tabla([{ h: 'Fecha', f: (m) => A.fecha(m.fecha) }, { h: 'Tipo', f: (m) => e(m.tipo.replace(/_/g, ' ')) }, { h: 'Motivo', f: (m) => e(m.motivo || '') }, { h: 'Cantidad', n: 1, f: (m) => `<span class="${m.cantidad < 0 ? 'bad' : 'ok'}">${fm(m.cantidad, 2)}</span>` }, { h: 'Saldo', n: 1, f: (m) => fm(m.saldo, 2) }, { h: 'Usuario', f: (m) => e(m.usuario || '') }], k), { ancho: true }); },
+        const NOMBRES = { compra: 'Compra', venta: 'Venta', anulacion_venta: 'Anulación de venta', anulacion_compra: 'Anulación de compra', inventario_inicial: 'Inventario inicial', ajuste: 'Ajuste', merma: 'Merma', consumo_interno: 'Consumo interno', ajuste_conteo: 'Ajuste por conteo', revalorizacion: 'Cambio de costo' };
+        const sal = (m) => m.cantidad < 0, nul = (m) => m.cantidad === 0;
+        const resumen = `<div class="grid g3" style="margin-bottom:12px"><div class="kpi"><div class="l">Existencia</div><div class="v">${fm(k.existencia, 2)}</div></div><div class="kpi"><div class="l">Costo promedio</div><div class="v">${usd(k.costo_promedio)}</div></div><div class="kpi"><div class="l">Valor del inventario</div><div class="v">${usd(k.valor_usd)}</div></div></div>
+          <p class="muted" style="margin:0 0 8px;font-size:12px">Valorado al costo promedio móvil. Las entradas por compra recalculan el promedio; ventas, mermas, consumos y ajustes salen o entran al promedio vigente en ese momento.</p>`;
+        A.modal('Kardex valorizado — ' + p.nombre, resumen + A.tabla([{ h: 'Fecha', f: (m) => A.fecha(m.fecha) }, { h: 'Movimiento', f: (m) => e(NOMBRES[m.tipo] || m.tipo.replace(/_/g, ' ')) + (m.motivo ? `<div class="muted" style="font-size:11px">${e(m.motivo)}</div>` : '') },
+          { h: 'Entrada', n: 1, f: (m) => (m.cantidad > 0 ? `<span class="ok">${fm(m.cantidad, 2)}</span>` : '') }, { h: 'Salida', n: 1, f: (m) => (sal(m) ? `<span class="bad">${fm(-m.cantidad, 2)}</span>` : '') },
+          { h: 'Costo unit.', n: 1, f: (m) => fm(m.costo_usd, 4) }, { h: 'Valor mov.', n: 1, f: (m) => (nul(m) ? '' : `<span class="${sal(m) ? 'bad' : 'ok'}">${usd(m.valor_usd)}</span>`) },
+          { h: 'Saldo', n: 1, f: (m) => fm(m.saldo_cant, 2) }, { h: 'Costo prom.', n: 1, f: (m) => fm(m.costo_prom, 4) }, { h: 'Saldo valor', n: 1, f: (m) => usd(m.saldo_valor) }, { h: 'Usuario', f: (m) => e(m.usuario || '') }], k.movimientos), { ancho: true }); },
       ajuste: (el) => { const p = rows[+el.dataset.i]; return A.form('Ajuste de inventario — ' + p.nombre, [
         { n: 'tipo', l: 'Tipo', t: 'select', o: [['ajuste', 'Ajuste (+/−)'], ['merma', 'Merma (vencido, dañado, robo)'], ['consumo_interno', 'Consumo interno']] },
         { n: 'cantidad', l: `Cantidad (negativa para salidas). Existencia actual: ${fm(p.stock, 2)}`, t: 'number', req: true }, { n: 'motivo', l: 'Motivo', t: 'textarea', req: true, full: true }], { tipo: 'ajuste' },
@@ -176,8 +183,9 @@
       A.modal(c.nombre, `<div class="grid g3"><div class="kpi"><div class="l">Límite</div><div class="v">${usd(c.limite_usd)}</div></div><div class="kpi"><div class="l">Deuda</div><div class="v">${usd(c.deuda_usd)}</div></div><div class="kpi"><div class="l">Vencido</div><div class="v ${c.vencido_usd > 0 ? 'bad' : ''}">${usd(c.vencido_usd)}</div></div></div>
         <h3 style="margin-top:14px">Cuentas por cobrar</h3>${A.tabla([{ h: 'Venta', f: (x) => e(x.venta || '') }, { h: 'Vence', f: (x) => e(x.vence) }, { h: 'Total', n: 1, f: (x) => usd(x.total_usd) }, { h: 'Saldo', n: 1, f: (x) => usd(x.saldo_usd) }, { h: 'Estado', f: (x) => A.estadoTag(x.estado) }], c.cxc)}
         <h3 style="margin-top:14px">Últimas compras</h3>${A.tabla([{ h: 'N°', f: (x) => e(x.numero) }, { h: 'Fecha', f: (x) => A.fecha(x.fecha) }, { h: 'Total', n: 1, f: (x) => usd(x.total_usd) }, { h: 'Estado', f: (x) => A.estadoTag(x.estado) }], c.ventas)}`,
-        { ancho: true, pie: `${A.can('clientes.editar') ? '<button class="btn" data-pin>Asignar PIN de app</button><button class="btn" data-ed>Editar</button>' : ''}<a class="btn pri" href="#/cxc/${id}" data-go>Ir a cobranza</a>`, onMount: (v, cerrar) => {
+        { ancho: true, pie: `${A.can('clientes.editar') ? '<button class="btn" data-pin>Asignar PIN de app</button><button class="btn" data-ed>Editar</button>' : ''}<a class="btn" href="#/cxc/${id}" data-go>Ir a cobranza</a><button class="btn pri" data-ec>Estado de cuenta e historial</button>`, onMount: (v, cerrar) => {
           const ed = $('[data-ed]', v); if (ed) ed.onclick = () => { cerrar(); editar(c); }; $('[data-go]', v).onclick = cerrar;
+          $('[data-ec]', v).onclick = () => { cerrar(); A.estadoCuentaCliente(id).catch(A.fail); };
           const pin = $('[data-pin]', v); if (pin) pin.onclick = () => A.form('PIN de acceso a la app', [{ n: 'pin', l: 'PIN (4 a 8 dígitos)', req: true, ph: '1234' }], {}, async (x) => { await api.post(`/api/clientes/${id}/pin`, x); A.ok('PIN asignado'); });
         } });
     }

@@ -10,8 +10,9 @@
     const j = d.jornada;
     let abrir = '';
     if (!j) {
-      const u = jr.ultima || {};
-      abrir = `<div class="card"><h2>Abrir día operativo</h2><p class="muted">Sin día abierto no se puede vender, comprar ni cobrar. Registra las tasas vigentes.</p>
+      const th = jr.tasa_hoy, ult = jr.ultima || {};
+      const u = th || {};
+      abrir = `<div class="card"><h2>Abrir día operativo · ${e(A.hoy())}</h2><p class="muted">Sin día abierto no se puede vender, comprar ni cobrar. La tasa se registra a la fecha de hoy y hay que escribirla cada día${th ? ' (ya había una cargada para hoy)' : ult.tasa_usd_ves ? `. La última registrada fue la del ${e(ult.fecha || '')}: Bs ${fm(ult.tasa_usd_ves, 2)} por $` : ''}.</p>
         <form id="fa" class="row"><div><label>Tasa USD/Bs (Bs por 1 USD)</label><input name="tasa_usd_ves" type="number" step="any" min="0" value="${e(u.tasa_usd_ves || '')}" required></div>
         <div><label>Tasa EUR (Bs por 1 €)</label><input name="tasa_eur_ves" type="number" step="any" min="0" value="${u.tasa_eur_usd ? Math.round(u.tasa_eur_usd * u.tasa_usd_ves * 100) / 100 : ''}" required></div>
         <div><label>Fuente</label><input name="fuente" value="BCV"></div><div class="grow"><label>Observación</label><input name="obs"></div>
@@ -44,10 +45,11 @@
       catch (er) { A.fail(er); }
     };
     A.acciones(root, {
-      tasas: () => A.form('Actualizar tasas del día', [
+      tasas: () => A.form('Actualizar tasas', [
+        { n: 'fecha', l: 'Fecha a la que corresponde la tasa', t: 'date', req: true, ayuda: 'Si es la fecha del día abierto, cambia la tasa con la que se vende desde ahora. Otra fecha solo se registra en el historial (por ejemplo, cargar la de mañana).' },
         { n: 'tasa_usd_ves', l: 'Tasa USD (Bs por 1 $)', t: 'number', req: true }, { n: 'tasa_eur_ves', l: 'Tasa EUR (Bs por 1 €)', t: 'number', req: true },
         { n: 'fuente', l: 'Fuente' }, { n: 'motivo', l: 'Motivo del cambio', req: true }],
-        { tasa_usd_ves: j.tasa_usd_ves, tasa_eur_ves: Math.round(j.tasa_eur_usd * j.tasa_usd_ves * 100) / 100, fuente: j.fuente }, async (v) => { await api.post('/api/jornada/tasas', v); A.ok('Tasas actualizadas'); await A.refrescarEstado(); A.render(); },
+        { fecha: j.fecha, tasa_usd_ves: j.tasa_usd_ves, tasa_eur_ves: Math.round(j.tasa_eur_usd * j.tasa_usd_ves * 100) / 100, fuente: j.fuente }, async (v) => { await api.post('/api/tasas', v); A.ok('Tasas actualizadas'); await A.refrescarEstado(); A.render(); },
         { extra: '<p class="muted" style="margin-top:10px">Las operaciones anteriores conservan la tasa con la que se registraron.</p>' }),
       cerrar: async () => {
         const pc = await api.get('/api/jornada/pre-cierre');
@@ -74,11 +76,14 @@
     if (!S.turno) { root.innerHTML = '<h1>Punto de venta</h1><div class="card"><p>Debes abrir tu caja para vender.</p><a class="btn pri" href="#/caja">Abrir caja</a></div>'; return; }
     const cuentas = await api.get('/api/cuentas');
     const st = { items: [], cliente: null, pct: 0, res: [], sel: 0, pedido: null };
+    // si está activo, cada venta del POS exige identificar al cliente por cédula o RIF
+    const requiere = ((await api.get('/api/parametros').catch(() => ({ operacion: {} }))).operacion || {}).venta_requiere_cliente !== false;
+    const sinCliente = requiere ? 'Sin identificar' : 'Consumidor final';
     const nPorValidar = (await api.get('/api/pedidos?estado=pago_reportado').catch(() => [])).length;
     root.innerHTML = `<h1>Punto de venta <span class="muted" style="font-size:13px;font-weight:400">· F2 cobrar</span></h1>
       <div class="pos"><div><div class="card"><div class="row" style="flex-wrap:nowrap"><input id="q" placeholder="Escanea el código de barras o escribe el nombre…" autocomplete="off" autofocus><button class="btn" data-a="traer" title="Traer un pedido de delivery o de la app" style="white-space:nowrap">🛵 Pedido delivery${nPorValidar ? ` (${nPorValidar})` : ''}</button>${S.lector && S.lector.tipo === 'camara' ? '<button class="btn" data-a="camara" style="white-space:nowrap">📷 Escanear</button>' : ''}${S.reconocimiento && S.reconocimiento.disponible ? '<button class="btn" data-a="reconocer" title="Reconocer el producto con una foto" style="white-space:nowrap">📷 Foto</button>' : ''}</div><div id="res" class="pos-res" hidden></div></div>
       <div class="card" id="carrito"></div></div>
-      <div><div class="card"><div class="row"><div class="grow"><label>Cliente</label><div id="cli" class="muted">Consumidor final</div></div><button class="btn sm" data-a="cliente">Cambiar</button></div>
+      <div><div class="card"><div class="row"><div class="grow"><label>Cliente</label><div id="cli" class="muted">${sinCliente}</div></div><button class="btn sm" data-a="cliente">${requiere ? 'Identificar' : 'Cambiar'}</button></div>
       <div style="margin-top:10px"><label>Descuento %</label><input id="pct" type="number" min="0" max="100" step="any" value="0" style="max-width:120px"></div></div>
       <div class="total-box"><div class="muted">Total a pagar</div><div class="big" id="tot">$ 0,00</div><div class="muted" id="tot2"></div></div>
       <div class="row" style="margin-top:12px"><button class="btn pri lg grow" data-a="cobrar" id="bcob">Cobrar</button><button class="btn" data-a="vaciar">Vaciar</button></div></div></div>`;
@@ -101,8 +106,59 @@
       $('#tot2', root).textContent = `${ves(t.total * S.jornada.tasa_usd_ves)} · € ${fm(t.total / S.jornada.tasa_eur_usd)}`;
       $('#bcob', root).textContent = 'Cobrar'; $('#bcob', root).disabled = !st.items.length;
     }
+    function fijarCliente(c) {
+      st.cliente = c;
+      ccli.innerHTML = c ? `<b>${e(c.nombre)}</b> ${c.documento ? '<span class="muted">' + e(c.documento) + '</span>' : ''} ${c.credito_habilitado ? A.tag('crédito', 'info') : ''}` : sinCliente;
+    }
+    // Pide la cédula o el RIF; si el cliente no existe ofrece crearlo. Devuelve el cliente elegido o null si se cierra sin elegir.
+    function identificar() {
+      return new Promise((resolve) => {
+        let hecho = false;
+        const fin = (c) => { if (hecho) return; hecho = true; if (c) { fijarCliente(c); q.focus(); } resolve(c); };
+        A.modal('Identificar al cliente', `<p class="muted" style="margin-top:0">Para vender, escribe la cédula o el RIF del cliente.</p>
+          <form id="idf" class="row" style="flex-wrap:nowrap"><input id="idd" placeholder="Ej. V-12345678 o J-123456789" autocomplete="off" required><button class="btn pri">Buscar</button></form>
+          <div id="idr" style="margin-top:14px"></div>`, { onMount: (v, cerrar) => {
+          const idd = $('#idd', v), idr = $('#idr', v);
+          const elegir = (c) => { fin(c); cerrar(); };
+          const mostrar = (r) => {
+            if (r.cliente) {
+              const c = r.cliente;
+              idr.innerHTML = `<div class="card"><b>${e(c.nombre)}</b><div class="muted">${e(c.documento || '')} ${e(c.telefono || '')}</div>
+                <div style="margin:6px 0">${c.estado !== 'activo' ? '<span class="bad">Cliente suspendido</span>' : c.credito_habilitado ? `Crédito: límite ${usd(c.limite_usd)} · debe ${usd(c.deuda_usd)}${c.vencido_usd > 0 ? ' <span class="bad">(vencido)</span>' : ''}` : '<span class="muted">Paga de contado</span>'}</div>
+                <button class="btn pri" id="usar">Continuar con este cliente</button></div>`;
+              $('#usar', v).onclick = () => elegir(c); $('#usar', v).focus();
+              return;
+            }
+            idr.innerHTML = `<div class="card"><p style="margin-top:0"><b>No hay un cliente con el documento ${e(r.documento)}.</b> Créalo para continuar.</p>
+              <form id="nc" class="form"><div class="full"><label>Nombre o razón social *</label><input name="nombre" required autocomplete="off"></div>
+              <div><label>Teléfono</label><input name="telefono" inputmode="tel" autocomplete="off"></div><div><label>Dirección</label><input name="direccion" autocomplete="off"></div>
+              <div class="full"><button class="btn pri">Crear cliente y continuar</button></div><div id="nce" class="bad"></div></form></div>`;
+            const nc = $('#nc', v); nc.nombre.focus();
+            nc.onsubmit = async (ev) => {
+              ev.preventDefault(); const b = nc.querySelector('button'); b.disabled = true;
+              try {
+                const cr = await api.post('/api/clientes', { nombre: nc.nombre.value, documento: r.documento, telefono: nc.telefono.value, direccion: nc.direccion.value });
+                A.ok('Cliente creado'); elegir(await api.get('/api/clientes/' + cr.id));
+              } catch (er) { $('#nce', v).textContent = er.message; b.disabled = false; }
+            };
+          };
+          $('#idf', v).onsubmit = async (ev) => {
+            ev.preventDefault();
+            try { mostrar(await api.get('/api/clientes/por-documento' + A.qs({ doc: idd.value }))); } catch (er) { idr.innerHTML = `<div class="bad">${e(er.message)}</div>`; }
+          };
+          idd.focus();
+          const o = new MutationObserver(() => { if (!document.body.contains(v)) { o.disconnect(); fin(null); } }); o.observe(document.body, { childList: true, subtree: true });
+        } });
+      });
+    }
+    // Antes de vender hay que tener al cliente identificado (los pedidos de delivery ya traen el suyo)
+    async function asegurarCliente() {
+      if (!requiere || st.cliente || st.pedido) return true;
+      return !!(await identificar());
+    }
     function agregar(p) {
       if (st.pedido) return A.toast('Estás atendiendo un pedido de delivery: suéltalo para vender otra cosa', 'bad');
+      if (requiere && !st.cliente) { identificar().then((c) => { if (c) agregar(p); else A.toast('Identifica al cliente para iniciar la venta', 'bad'); }); return; }
       const ex = st.items.find((i) => i.id === p.id);
       if (ex) ex.cantidad += 1; else st.items.push({ id: p.id, nombre: p.nombre, codigo: p.codigo, precio: p.precio_usd, cantidad: 1, disponible: p.disponible });
       if (!(p.precio_usd > 0)) A.toast(`"${p.nombre}" no tiene precio de venta`, 'bad');
@@ -154,8 +210,9 @@
     }
     function soltarPedido() {
       st.pedido = null; st.items = []; st.cliente = null;
-      ccli.textContent = 'Consumidor final'; $('#bcob', root).textContent = 'Cobrar';
+      ccli.textContent = sinCliente; $('#bcob', root).textContent = 'Cobrar';
       pintar(); q.focus();
+      if (requiere) identificar();
     }
     async function cargarPedido(id) {
       const p = await api.get('/api/pedidos/' + id);
@@ -272,11 +329,14 @@
             let r;
             try { r = await api.post('/api/ventas', body_); }
             catch (er) { if (/supervisor/.test(er.message) && A.can('credito.autorizar') && await A.confirmar('Autorización de crédito', e(er.message) + '<br>¿Autorizar la excepción?', { ok: 'Autorizar' })) r = await api.post('/api/ventas', { ...body_, forzar: true }); else throw er; }
-            cerrar(); st.items = []; st.cliente = null; st.pct = 0; $('#pct', root).value = 0; cli.textContent = 'Consumidor final'; pintar();
+            cerrar(); st.items = []; st.cliente = null; st.pct = 0; $('#pct', root).value = 0; cli.textContent = sinCliente; pintar();
             A.ok('Venta ' + r.numero + ' registrada');
             A.modal('Venta registrada', `<div class="c"><div style="font-size:40px">✅</div><h2>${e(r.numero)}</h2><div style="font-size:28px;font-weight:800">${usd(r.total_usd)}</div>
               ${r.vuelto_usd > 0 ? `<p>Vuelto: <b>${usd(r.vuelto_usd)}</b> · ${ves(r.vuelto_usd * j.tasa_usd_ves)}</p>${(r.vuelto || []).map((x) => `<div class="muted">Entregado en ${e(A.MEDIOS[x.medio])} ${mon(x.monto, x.moneda)}${x.referencia ? ' · ref ' + e(x.referencia) : ''}</div>`).join('')}` : ''}${r.credito_usd > 0 ? `<p>A crédito: <b>${usd(r.credito_usd)}</b></p>` : ''}</div>`,
-              { pie: `<button class="btn" data-p>Imprimir</button><button class="btn pri" data-c>Nueva venta</button>`, onMount: (v2, c2) => { $('[data-c]', v2).onclick = () => { c2(); q.focus(); }; $('[data-p]', v2).onclick = () => A.imprimirVenta(r.id); } });
+              { pie: `<button class="btn pri lg" data-p>🖨 Imprimir ticket</button><button class="btn" data-c>Nueva venta</button>`, onMount: (v2, c2) => {
+                const nueva = () => { c2(); q.focus(); if (requiere) identificar(); };
+                $('[data-c]', v2).onclick = nueva; $('[data-p]', v2).onclick = () => A.imprimirVenta(r.id); $('[data-p]', v2).focus();
+              } });
             await A.refrescarEstado();
           } catch (er) { A.fail(er); bs.disabled = false; }
         };
@@ -290,11 +350,12 @@
       mas: (el) => { st.items[+el.dataset.i].cantidad += 1; pintar(); },
       quitar: (el) => { st.items.splice(+el.dataset.i, 1); pintar(); },
       vaciar: () => { if (st.pedido) return soltarPedido(); st.items = []; pintar(); q.focus(); },
-      cobrar: () => { if (st.pedido) return validarPedido(); if (st.items.length) cobrar(); },
+      cobrar: async () => { if (st.pedido) return validarPedido(); if (st.items.length && await asegurarCliente()) cobrar(); },
       traer: () => traerPedido(), camara: () => A.lector.escanearCamara((cod) => A.lector.emitir(cod)).catch(A.fail), soltarPedido: () => soltarPedido(), rechazarPedido: () => rechazarPedido(),
       comprobante: async (el) => { const r = await api.get(`/api/pagos-reportados/${el.dataset.id}/comprobante`); A.modal('Comprobante', `<img src="${r.comprobante}" alt="comprobante" style="max-width:100%;border-radius:8px">`); },
       cliente: () => {
         if (st.pedido) return A.toast('El cliente lo define el pedido', 'bad');
+        if (requiere) return identificar();
         A.modal('Cliente', '<input id="cq" placeholder="Buscar por nombre, documento o teléfono"><div id="cl" style="margin-top:10px"></div>', { pie: '<button class="btn" data-g>Consumidor final</button>', onMount: (v, c) => {
           $('[data-g]', v).onclick = () => { st.cliente = null; cli.textContent = 'Consumidor final'; c(); };
           const lista = async () => { const rows = await api.get('/api/clientes' + A.qs({ q: $('#cq', v).value })); $('#cl', v).innerHTML = A.tabla([{ h: 'Cliente', f: (r) => `<b>${e(r.nombre)}</b><div class="muted">${e(r.telefono || '')} ${e(r.documento || '')}</div>` }, { h: 'Crédito', f: (r) => r.credito_habilitado ? `Límite ${usd(r.limite_usd)} · debe ${usd(r.deuda_usd)}${r.vencido_usd > 0 ? ' <span class="bad">vencido</span>' : ''}` : '<span class="muted">Contado</span>' }], rows, { clic: true });
@@ -310,7 +371,7 @@
       catch (er) { A.lector.pitar(false); A.fail(er); }
     });
     pintar(); q.focus();
-    if (arg === 'pedidos') traerPedido();
+    if (arg === 'pedidos') traerPedido(); else if (requiere) identificar();
   };
 
   // Reconocimiento de producto por foto: cámara o archivo -> /api/reconocer -> el cajero confirma el candidato.

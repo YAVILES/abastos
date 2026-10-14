@@ -277,7 +277,8 @@ window.Abasto = (() => {
     const chipLic = lic.estado === 'gracia' ? `<span class="chip warn">Licencia vencida: te quedan ${Math.max(0, 5 + lic.dias_restantes)} día(s) de gracia</span>`
       : lic.estado === 'vencida' ? '<span class="chip bad">Licencia vencida: solo lectura. Renueva tu plan</span>'
       : lic.estado === 'activa' && lic.dias_restantes <= 7 ? `<span class="chip warn">Tu licencia vence en ${lic.dias_restantes} día(s)</span>` : '';
-    c.innerHTML = `${chipLic}${j ? `<span class="chip ok">Día abierto ${e(j.fecha)}</span><span class="chip">$ = Bs ${fm(j.tasa_usd_ves, 2)}</span><span class="chip">€ = Bs ${fm(j.tasa_usd_ves * j.tasa_eur_usd, 2)}</span>` : `<a class="chip bad" href="#/inicio">Día cerrado — abrir con tasas</a>`}
+    const viejo = j && j.fecha < hoy();
+    c.innerHTML = `${chipLic}${viejo ? `<a class="chip bad" href="#/inicio" title="Cierra este día y abre el de hoy con su tasa">El día abierto es del ${e(j.fecha)}: falta la tasa de hoy</a>` : ''}${j ? `<span class="chip ${viejo ? 'warn' : 'ok'}">Día abierto ${e(j.fecha)}</span><span class="chip">$ = Bs ${fm(j.tasa_usd_ves, 2)}</span><span class="chip">€ = Bs ${fm(j.tasa_usd_ves * j.tasa_eur_usd, 2)}</span>` : `<a class="chip bad" href="#/inicio">Día cerrado — abrir con tasas</a>`}
       ${t ? `<span class="chip ok">Mi caja abierta</span>` : ''}`;
   }
 

@@ -95,6 +95,11 @@ async function api(req, res, url) {
     }
     return ruta.fn(ctx);
   });
+  // conexión que se queda abierta (aviso inmediato a los repartidores)
+  if (resultado && resultado.__flujo) {
+    res.writeHead(200, { ...SEG, 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
+    return resultado.__flujo(res, req);
+  }
   responder(res, 200, resultado);
 }
 

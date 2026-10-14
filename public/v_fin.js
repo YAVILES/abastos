@@ -43,7 +43,7 @@
     const rows = await api.get('/api/compras');
     root.innerHTML = `<div class="topbar"><h1 style="margin:0">Compras</h1><div class="chips"><a class="btn" href="#/compras/sugerencias">Sugerencias de compra</a>${A.can('compras.editar') ? '<a class="btn pri" href="#/compras/nueva">+ Nueva compra</a>' : ''}</div></div>
       <div class="card">${A.tabla([{ h: 'N°', f: (r) => e(r.numero) }, { h: 'Fecha', f: (r) => A.fecha(r.fecha) }, { h: 'Proveedor', f: (r) => e(r.proveedor) }, { h: 'Condición', f: (r) => e(r.condicion) }, { h: 'Moneda', f: (r) => e(r.moneda) },
-        { h: 'Total', n: 1, f: (r) => mon(r.total_moneda, r.moneda) }, { h: 'Total USD', n: 1, f: (r) => r.estado === 'recibida' ? usd(r.total_usd) : '—' }, { h: 'Estado', f: (r) => (r.estado === 'borrador' ? A.tag('Orden de compra', 'warn') : A.estadoTag(r.estado)) }], rows, { clic: true, vacio: 'Aún no hay compras' })}</div>`;
+        { h: 'Total', n: 1, f: (r) => mon(r.total_moneda, r.moneda) }, { h: 'Total USD', n: 1, f: (r) => r.estado === 'recibida' ? usd(r.total_usd) : '—' }, { h: 'Estado', f: (r) => (r.estado === 'borrador' ? A.tag('Orden de compra', 'warn') : r.estado === 'enviada' ? A.tag('Enviada al proveedor', 'info') + `<div class="muted" style="font-size:11px">${e(A.fecha(r.enviada_en || ''))}</div>` : A.estadoTag(r.estado) + (r.con_diferencias ? '<div class="muted" style="font-size:11px">con diferencias</div>' : '')) }], rows, { clic: true, vacio: 'Aún no hay compras' })}</div>`;
     root.querySelectorAll('tr.click').forEach((tr) => tr.onclick = () => detalle(rows[+tr.dataset.i].id));
     function imprimirOrden(c) {
       const w = window.open('', '_blank', 'width=820,height=700');
@@ -59,18 +59,56 @@
     async function detalle(id) {
       const c = await api.get('/api/compras/' + id);
       const cuentas = (await api.get('/api/cuentas')).filter((x) => x.activo && x.moneda === c.moneda);
-      A.modal((c.estado === 'borrador' ? 'Orden de compra ' : 'Compra ') + c.numero, `<p>${e(c.proveedor)} · ${A.fecha(c.fecha)} · ${A.estadoTag(c.estado)} · ${e(c.condicion)} · ${e(c.moneda)}${c.tasa && c.moneda !== 'USD' ? ' (tasa ' + fm(c.tasa, 4) + ')' : ''}</p>
-        ${A.tabla([{ h: 'Producto', f: (i) => e(i.nombre) }, { h: 'Cant.', n: 1, f: (i) => fm(i.cantidad, 2) + ' ' + e(i.unidad_compra) }, { h: 'Unidades', n: 1, f: (i) => fm(i.unidades, 2) }, { h: 'Costo unit.', n: 1, f: (i) => fm(i.costo_unit) }, { h: 'Total', n: 1, f: (i) => fm(i.cantidad * i.costo_unit) }], c.items)}
-        <p class="r"><b>Total ${mon(c.total_moneda, c.moneda)}</b>${c.estado === 'recibida' ? ` · ${usd(c.total_usd)}` : ''}</p>
-        ${c.estado === 'borrador' && A.can('compras.editar') ? `<div class="card"><h3>Recibir mercancía</h3><div class="row"><div><label>Condición</label><select id="rc"><option value="contado" ${c.condicion === 'contado' ? 'selected' : ''}>Contado</option><option value="credito" ${c.condicion === 'credito' ? 'selected' : ''}>Crédito</option></select></div>
+      const pendiente = ['borrador', 'enviada'].includes(c.estado), puede = A.can('compras.editar');
+      const MEDIOS_ENVIO = { whatsapp: 'WhatsApp', correo: 'correo', telefono: 'teléfono', en_persona: 'en persona', otro: 'otro medio' };
+      const etiqueta = c.estado === 'borrador' ? A.tag('Orden de compra', 'warn') : c.estado === 'enviada' ? A.tag('Enviada al proveedor', 'info')
+        : A.estadoTag(c.estado) + (c.con_diferencias ? ' ' + A.tag('con diferencias', 'warn') : '');
+      const envio = c.enviada_en ? `<p class="muted" style="margin:4px 0">Enviada al proveedor el ${e(A.fecha(c.enviada_en))} por ${e(c.enviada_por)}${c.envio_medio ? ' (' + e(MEDIOS_ENVIO[c.envio_medio] || c.envio_medio) + ')' : ''}${c.envio_nota ? ' · ' + e(c.envio_nota) : ''}</p>` : '';
+      const recibo = c.estado === 'recibida' ? `<p class="muted" style="margin:4px 0">Recibida el ${e(A.fecha(c.recibida_en))}${c.recibida_por ? ' por ' + e(c.recibida_por) : ''}${c.factura ? ' · factura ' + e(c.factura) : ''}${c.factura_fecha ? ' del ' + e(c.factura_fecha) : ''}${c.recepcion_nota ? ' · ' + e(c.recepcion_nota) : ''}</p>` : '';
+      const pedida = (i) => (i.cantidad_pedida != null ? i.cantidad_pedida : i.cantidad);
+      const costoPed = (i) => (i.costo_pedido != null ? i.costo_pedido : i.costo_unit);
+      // tabla de solo lectura: lo pedido y, si ya se recibió, lo que llegó
+      const tablaLectura = A.tabla([{ h: 'Producto', f: (i) => e(i.nombre) },
+        { h: 'Pedido', n: 1, f: (i) => fm(pedida(i), 2) + ' ' + e(i.unidad_compra) },
+        ...(c.estado === 'recibida' ? [{ h: 'Recibido', n: 1, f: (i) => `<span class="${i.cantidad < pedida(i) ? 'bad' : i.cantidad > pedida(i) ? 'warn' : ''}">${fm(i.cantidad, 2)}</span>` }] : []),
+        { h: 'Costo unit.', n: 1, f: (i) => (Math.abs(i.costo_unit - costoPed(i)) > 1e-9 ? `<s class="muted">${fm(costoPed(i))}</s> ${fm(i.costo_unit)}` : fm(i.costo_unit)) },
+        { h: 'Total', n: 1, f: (i) => fm(i.cantidad * i.costo_unit) }], c.items);
+      const recepcion = pendiente && puede ? `<div class="card"><h3>Recibir mercancía y factura</h3>
+        <p class="muted" style="margin:0 0 8px">Escribe lo que realmente llegó y el costo que trae la factura. Puede ser menos (o más) de lo pedido: la orden conserva lo que se pidió y queda registrada la diferencia.</p>
+        ${A.tabla([{ h: 'Producto', f: (i) => e(i.nombre) }, { h: 'Pedido', n: 1, f: (i) => fm(pedida(i), 2) + ' ' + e(i.unidad_compra) },
+          { h: 'Recibido', f: (i) => `<input data-l="${i.id}" data-k="cantidad" type="number" step="any" min="0" value="${pedida(i)}" style="width:90px"> <span class="muted">${e(i.unidad_compra)}</span>` },
+          { h: 'Costo unit. factura', f: (i) => `<input data-l="${i.id}" data-k="costo_unit" type="number" step="any" min="0" value="${costoPed(i)}" style="width:100px">` },
+          { h: 'Total', n: 1, f: (i) => `<span data-t="${i.id}">${fm(pedida(i) * costoPed(i))}</span>` }], c.items)}
+        <p class="r" style="margin:8px 0 0"><span class="muted">Pedido ${mon(c.total_pedido != null ? c.total_pedido : c.total_moneda, c.moneda)}</span> · <b>Recibido <span id="rtot">${mon(c.total_moneda, c.moneda)}</span></b> <span id="rdif" class="muted"></span></p>
+        <div class="row" style="margin-top:10px"><div><label>N° de factura</label><input id="rf" autocomplete="off"></div><div><label>Fecha de la factura</label><input id="rff" type="date"></div><div class="grow"><label>Nota de la recepción</label><input id="rn" placeholder="Ej. faltaron 2 cajas"></div></div>
+        <div class="row" style="margin-top:10px"><div><label>Condición</label><select id="rc"><option value="contado" ${c.condicion === 'contado' ? 'selected' : ''}>Contado</option><option value="credito" ${c.condicion === 'credito' ? 'selected' : ''}>Crédito</option></select></div>
           <div id="rcont" class="row"><div><label>Medio</label><select id="rm"><option value="efectivo">Efectivo</option><option value="transferencia">Transferencia</option><option value="pago_movil">Pago móvil</option><option value="punto">Punto</option></select></div>
           <div><label>Cuenta de salida</label><select id="rcu">${cuentas.map((x) => `<option value="${x.id}">${e(x.nombre)} (${mon(x.saldo, x.moneda)})</option>`).join('')}</select></div><div><label>Referencia</label><input id="rr"></div></div>
-          <div id="rcre" hidden><label>Días de crédito</label><input id="rd" type="number" value="${c.dias_credito || 0}"></div></div></div>` : ''}`,
-        { ancho: true, pie: `<button class="btn" data-imp>Imprimir orden</button>${c.estado !== 'anulada' && A.can('compras.editar') ? '<button class="btn bad" data-an>Anular</button>' : ''}${c.estado === 'borrador' && A.can('compras.editar') ? '<button class="btn pri" data-rec>Recibir en inventario</button>' : ''}`, onMount: (v, cerrar) => {
+          <div id="rcre" hidden><label>Días de crédito</label><input id="rd" type="number" value="${c.dias_credito || 0}"></div></div></div>` : '';
+      A.modal((pendiente ? 'Orden de compra ' : 'Compra ') + c.numero, `<p>${e(c.proveedor)} · ${A.fecha(c.fecha)} · ${etiqueta} · ${e(c.condicion)} · ${e(c.moneda)}${c.tasa && c.moneda !== 'USD' ? ' (tasa ' + fm(c.tasa, 4) + ')' : ''}</p>${envio}${recibo}
+        ${pendiente && puede ? '' : tablaLectura}
+        ${pendiente && puede ? '' : `<p class="r"><b>Total ${mon(c.total_moneda, c.moneda)}</b>${c.estado === 'recibida' ? ` · ${usd(c.total_usd)}` : ''}${c.estado === 'recibida' && c.total_pedido != null && Math.abs(c.total_pedido - c.total_moneda) > 0.005 ? ` <span class="muted">(pedido ${mon(c.total_pedido, c.moneda)})</span>` : ''}</p>`}
+        ${pendiente && !puede ? tablaLectura : ''}${recepcion}`,
+        { ancho: true, pie: `<button class="btn" data-imp>Imprimir orden</button>${c.estado !== 'anulada' && puede ? '<button class="btn bad" data-an>Anular</button>' : ''}${c.estado === 'borrador' && puede ? '<button class="btn" data-env>Marcar como enviada al proveedor</button>' : ''}${pendiente && puede ? '<button class="btn pri" data-rec>Recibir en inventario</button>' : ''}`, onMount: (v, cerrar) => {
           const rc = $('#rc', v); if (rc) { const sw = () => { $('#rcont', v).hidden = rc.value !== 'contado'; $('#rcre', v).hidden = rc.value === 'contado'; }; rc.onchange = sw; sw(); }
+          const lineas = () => c.items.map((i) => {
+            const q = $(`[data-l="${i.id}"][data-k="cantidad"]`, v), k = $(`[data-l="${i.id}"][data-k="costo_unit"]`, v);
+            return { i, detalle_id: i.id, cantidad: q.value === '' ? 0 : parseFloat(q.value), costo_unit: k.value === '' ? 0 : parseFloat(k.value) };
+          });
+          const recalcular = () => {
+            let total = 0, difs = 0;
+            for (const l of lineas()) { total += (l.cantidad || 0) * (l.costo_unit || 0); if (l.cantidad !== pedida(l.i) || l.costo_unit !== costoPed(l.i)) difs++; const t = $(`[data-t="${l.i.id}"]`, v); if (t) t.textContent = fm((l.cantidad || 0) * (l.costo_unit || 0)); }
+            $('#rtot', v).textContent = mon(total, c.moneda); $('#rdif', v).textContent = difs ? `· ${difs} línea${difs === 1 ? '' : 's'} con diferencias` : '';
+          };
+          if (pendiente && puede) { v.querySelectorAll('input[data-l]').forEach((inp) => inp.oninput = recalcular); recalcular(); }
           const rec = $('[data-rec]', v); if (rec) rec.onclick = async () => { try {
-            await api.post(`/api/compras/${id}/recibir`, { condicion: rc.value, medio: $('#rm', v).value, cuenta_id: +$('#rcu', v).value || undefined, referencia: $('#rr', v).value, dias_credito: +$('#rd', v).value }); A.ok('Compra recibida'); cerrar(); A.render(); } catch (er) { A.fail(er); } };
-          $('[data-imp]', v).onclick = () => imprimirOrden(c);
+            await api.post(`/api/compras/${id}/recibir`, { items: lineas().map(({ detalle_id, cantidad, costo_unit }) => ({ detalle_id, cantidad, costo_unit })), factura: $('#rf', v).value, factura_fecha: $('#rff', v).value, recepcion_nota: $('#rn', v).value,
+              condicion: rc.value, medio: $('#rm', v).value, cuenta_id: +$('#rcu', v).value || undefined, referencia: $('#rr', v).value, dias_credito: +$('#rd', v).value }); A.ok('Compra recibida'); cerrar(); A.render(); } catch (er) { A.fail(er); } };
+          const env = $('[data-env]', v); if (env) env.onclick = () => A.form('Registrar envío al proveedor', [
+            { n: 'medio_envio', l: '¿Cómo se la enviaste?', t: 'select', o: Object.entries(MEDIOS_ENVIO) }, { n: 'nota', l: 'Nota (opcional)', full: true }], { medio_envio: 'whatsapp' },
+            async (x) => { await api.post(`/api/compras/${id}/enviar`, x); A.ok('Orden marcada como enviada al proveedor'); cerrar(); A.render(); },
+            { extra: '<p class="muted" style="margin-top:10px">Queda registrado quién la envió y cuándo, y las cantidades pedidas ya no cambian.</p>' });
+          $('[data-imp]', v).onclick = () => imprimirOrden({ ...c, items: c.items.map((i) => ({ ...i, cantidad: pedida(i), costo_unit: costoPed(i), unidades: pedida(i) * i.factor })), total_moneda: c.total_pedido != null ? c.total_pedido : c.total_moneda });
           const an = $('[data-an]', v); if (an) an.onclick = async () => { const mo = await A.pedirMotivo('Motivo de la anulación'); if (!mo) return; try { await api.post(`/api/compras/${id}/anular`, { motivo: mo }); A.ok('Compra anulada'); cerrar(); A.render(); } catch (er) { A.fail(er); } };
         } });
     }
@@ -103,7 +141,7 @@
 
   async function sugerencias(root) {
     const a = await api.get('/api/compras/analisis');
-    const ordenes = (await api.get('/api/compras?estado=borrador')).length;
+    const ordenes = (await api.get('/api/compras')).filter((c) => ['borrador', 'enviada'].includes(c.estado)).length;
     const f1 = (n) => (n == null ? '—' : Number(n).toLocaleString('es-VE', { maximumFractionDigits: 1 }));
     const NIV = { agotado: ['bad', 'Agotado'], critico: ['bad', 'Crítico'], reponer: ['warn', 'Reponer'], planificar: ['info', 'Planificar'], sobrestock: ['', 'Sobrestock'], sin_movimiento: ['', 'Sin movimiento'] };
     const ahora = a.filas.filter((x) => ['agotado', 'critico', 'reponer'].includes(x.nivel));
@@ -241,16 +279,102 @@
   };
 
   // ======================= CxC =======================
+  // Formulario de cobro de una cuenta por cobrar; lo usan la lista de cobranza y el estado de cuenta del cliente
+  async function cobrarFactura(c, cliente, despues) {
+    const bancos = (await api.get('/api/cuentas')).filter((x) => x.activo && x.tipo !== 'caja');
+    return A.form('Cobrar a ' + cliente, [{ n: 'medio', l: 'Medio', t: 'select', o: [['efectivo', 'Efectivo'], ['pago_movil', 'Pago móvil'], ['transferencia', 'Transferencia'], ['punto', 'Punto']] }, { n: 'moneda', l: 'Moneda', t: 'select', o: [['USD', 'USD'], ['VES', 'Bs'], ['EUR', 'EUR']] },
+      { n: 'monto', l: `Monto recibido (saldo ${usd(c.saldo_usd)})`, t: 'number', req: true, min: 0.01 }, { n: 'cuenta_id', l: 'Banco receptor (si no es efectivo)', t: 'select', o: [['', '—'], ...bancos.map((x) => [x.id, `${x.nombre} (${x.moneda})`])] }, { n: 'referencia', l: 'Referencia (si no es efectivo)' }],
+      { medio: 'efectivo', moneda: 'USD', monto: c.saldo_usd }, async (v) => { await api.post(`/api/cxc/${c.id}/cobrar`, { pagos: [{ ...v, cuenta_id: v.cuenta_id ? +v.cuenta_id : undefined }] }); A.ok('Cobro registrado'); despues(); });
+  }
+
+  // Recordatorio de pago: el sistema propone el mensaje (editable), lo registra y abre WhatsApp con el texto listo para enviar
+  async function recordarPago(c, despues) {
+    if (!c) return A.toast('Este cliente ya no tiene saldos vencidos', 'bad');
+    return A.form('Recordatorio de pago a ' + c.nombre, [{ n: 'mensaje', l: c.telefono ? `Mensaje para ${c.telefono}` : 'Mensaje (el cliente no tiene teléfono: se copia para que lo envíes por otro medio)', t: 'textarea', req: true, full: true }], { mensaje: c.mensaje },
+      async (v) => {
+        await api.post(`/api/clientes/${c.id}/recordatorio`, { mensaje: v.mensaje, medio: 'whatsapp' });
+        if (c.telefono) window.open(A.wa(c.telefono, v.mensaje), '_blank', 'noopener');
+        else { try { await navigator.clipboard.writeText(v.mensaje); A.toast('Mensaje copiado', 'ok'); } catch { /* sin portapapeles */ } }
+        A.ok('Recordatorio registrado'); despues();
+      }, { ok: c.telefono ? 'Registrar y abrir WhatsApp' : 'Registrar y copiar mensaje', ancho: true, extra: '<p class="muted" style="margin-top:10px">Queda registrado quién lo envió y cuándo. El mensaje se abre en WhatsApp para que lo envíes tú.</p>' });
+  }
+  // Clientes con saldo vencido, de mayor a menor, para recordar el pago de cada uno
+  async function listaVencidos() {
+    const d = await api.get('/api/cxc/vencidos');
+    A.modal('Saldos vencidos', `<p class="muted" style="margin-top:0">${d.clientes.length} cliente(s) · <b>${usd(d.total_vencido_usd)}</b> vencidos. Recordar abre WhatsApp con el mensaje listo; queda registrado cuándo se le recordó a cada uno.</p>` + A.tabla([
+      { h: 'Cliente', f: (c) => `<b>${e(c.nombre)}</b><div class="muted" style="font-size:11px">${e(c.telefono || 'sin teléfono')}</div>` }, { h: 'Vencido', n: 1, f: (c) => `<b class="bad">${usd(c.vencido_usd)}</b>` }, { h: 'Facturas', n: 1, f: (c) => c.facturas },
+      { h: 'Atraso', n: 1, f: (c) => c.dias_max + ' d' }, { h: 'Último recordatorio', f: (c) => (c.ultimo_recordatorio ? A.fecha(c.ultimo_recordatorio) : '<span class="muted">nunca</span>') },
+      { h: '', f: (c, i) => `<button class="btn sm" data-h="${c.id}">Historial</button> ${A.can('cobros.crear') ? `<button class="btn sm pri" data-r="${i}">Recordar</button>` : ''}` }], d.clientes, { vacio: 'No hay saldos vencidos' }),
+      { ancho: true, onMount: (v, cerrar) => {
+        v.querySelectorAll('[data-r]').forEach((b) => b.onclick = () => recordarPago(d.clientes[+b.dataset.r], () => { cerrar(); listaVencidos().catch(A.fail); }).catch(A.fail));
+        v.querySelectorAll('[data-h]').forEach((b) => b.onclick = () => { cerrar(); A.estadoCuentaCliente(+b.dataset.h).catch(A.fail); });
+      } });
+  }
+
+  // Estado de cuenta del cliente: deuda, antigüedad, cada factura a crédito con sus cobros y el historial de movimientos con saldo
+  A.estadoCuentaCliente = async (id) => {
+    const d = await api.get(`/api/clientes/${id}/estado-cuenta`);
+    const r = d.resumen, c = d.cliente, ant = r.antiguedad;
+    const diasTxt = (f) => (f ? A.fecha(f).slice(0, 10) : '—');
+    const abiertas = d.facturas.filter((x) => ['pendiente', 'abonada'].includes(x.estado));
+    const TIPO = { cargo: ['warn', 'Venta a crédito'], cobro: ['ok', 'Cobro'], reverso: ['bad', 'Anulación'], contado: ['', 'Compra de contado'] };
+    const filasMov = d.movimientos.slice().reverse(); // lo más reciente arriba
+    const html = `<p class="muted" style="margin-top:0">${[c.documento && e(c.documento), c.telefono && e(c.telefono), c.credito_habilitado ? `Crédito hasta ${usd(c.limite_usd)} a ${c.dias_credito} días` : 'Paga de contado', c.estado === 'suspendido' ? 'SUSPENDIDO' : ''].filter(Boolean).join(' · ')}</p>
+      <div class="grid g4" style="margin-bottom:12px"><div class="kpi"><div class="l">Deuda actual</div><div class="v ${r.deuda_usd > 0 ? 'warn' : 'ok'}">${usd(r.deuda_usd)}</div><div class="s">${r.facturas_abiertas} factura(s) abierta(s)</div></div>
+        <div class="kpi"><div class="l">Vencida</div><div class="v ${r.vencida_usd > 0 ? 'bad' : ''}">${usd(r.vencida_usd)}</div><div class="s">vence en 7 días: ${usd(r.por_vencer_7d_usd)}</div></div>
+        <div class="kpi"><div class="l">Cobrado en total</div><div class="v">${usd(r.cobrado_usd)}</div><div class="s">${r.dias_promedio_cobro == null ? 'aún sin facturas pagadas' : r.dias_promedio_cobro < 1 ? 'suele pagar el mismo día' : 'paga en ' + fm(r.dias_promedio_cobro, 0) + ' día(s) en promedio'}</div></div>
+        <div class="kpi"><div class="l">Compras</div><div class="v">${usd(r.ventas_credito_usd + r.ventas_contado_usd)}</div><div class="s">a crédito ${usd(r.ventas_credito_usd)} · contado ${usd(r.ventas_contado_usd)}</div></div></div>
+      <div class="card" style="margin-bottom:12px"><b>Antigüedad de la deuda</b><div class="grid g4" style="margin-top:8px"><div>Vigente<br><b>${usd(ant.vigente)}</b></div><div>1 a 30 días vencida<br><b class="${ant.d1_30 ? 'warn' : ''}">${usd(ant.d1_30)}</b></div><div>31 a 60 días<br><b class="${ant.d31_60 ? 'bad' : ''}">${usd(ant.d31_60)}</b></div><div>Más de 60 días<br><b class="${ant.d60_mas ? 'bad' : ''}">${usd(ant.d60_mas)}</b></div></div>
+        <div class="muted" style="margin-top:8px;font-size:12px">${c.credito_habilitado ? `Crédito disponible: ${usd(r.credito_disponible_usd)} · ` : ''}Última compra: ${diasTxt(r.ultima_compra)} · Último cobro: ${diasTxt(r.ultimo_cobro)}</div></div>
+      <h3>Facturas a crédito</h3>${A.tabla([{ h: 'Venta', f: (x) => e(x.venta || '') }, { h: 'Fecha', f: (x) => diasTxt(x.creado) }, { h: 'Vence', f: (x) => `<span class="${x.dias_vencida ? 'bad' : ''}">${e(x.vence)}${x.dias_vencida ? ` (${x.dias_vencida} d de atraso)` : ''}</span>` },
+        { h: 'Total', n: 1, f: (x) => usd(x.total_usd) }, { h: 'Cobrado', n: 1, f: (x) => usd(x.cobrado_usd) }, { h: 'Saldo', n: 1, f: (x) => `<b>${usd(x.saldo_usd)}</b>` }, { h: 'Estado', f: (x) => A.estadoTag(x.estado) },
+        { h: 'Cobros', f: (x) => (x.cobros.length ? x.cobros.map((g) => `<div style="font-size:12px">${diasTxt(g.fecha)} · ${mon(g.monto, g.moneda)}${g.moneda !== 'USD' ? ` (${usd(g.monto_usd)})` : ''}${g.referencia ? ' · ref. ' + e(g.referencia) : ''}</div>`).join('') : '<span class="muted">—</span>') },
+        { h: '', f: (x) => (['pendiente', 'abonada'].includes(x.estado) && A.can('cobros.crear') ? `<button class="btn sm pri" data-cb="${x.id}">Cobrar</button>` : '') }], d.facturas, { vacio: 'Este cliente no tiene ventas a crédito' })}
+      <h3 style="margin-top:14px">Movimientos</h3>${A.tabla([{ h: 'Fecha', f: (m) => A.fecha(m.fecha) }, { h: 'Documento', f: (m) => e(m.doc || '') }, { h: 'Concepto', f: (m) => A.tag(TIPO[m.tipo][1], TIPO[m.tipo][0]) + ' <span class="muted" style="font-size:12px">' + e(m.detalle) + '</span>' },
+        { h: 'Cargo (deuda)', n: 1, f: (m) => (m.cargo ? usd(m.cargo) : '') }, { h: 'Abono', n: 1, f: (m) => (m.abono ? `<span class="ok">${usd(m.abono)}</span>` : '') }, { h: 'Saldo', n: 1, f: (m) => (m.tipo === 'contado' ? '<span class="muted">' + usd(m.monto_info) + '</span>' : `<b>${usd(m.saldo)}</b>`) }], filasMov, { vacio: 'Este cliente aún no tiene movimientos' })}
+      ${d.recordatorios.length ? `<h3 style="margin-top:14px">Recordatorios de pago enviados</h3>${A.tabla([{ h: 'Fecha', f: (x) => A.fecha(x.fecha) }, { h: 'Medio', f: (x) => e(x.medio) }, { h: 'Vencido entonces', n: 1, f: (x) => usd(x.monto_usd) }, { h: 'Enviado por', f: (x) => e(x.usuario || '') }, { h: 'Mensaje', f: (x) => `<span class="muted" style="font-size:12px">${e(x.mensaje)}</span>` }], d.recordatorios)}` : ''}
+      <p class="muted" style="font-size:12px">Las compras de contado se muestran como referencia (últimas 200) y no afectan el saldo. Montos en USD a la tasa del día de cada operación.</p>`;
+    A.modal('Estado de cuenta — ' + c.nombre, html, { ancho: true, pie: `<button class="btn" data-csv>Exportar CSV</button>${r.vencida_usd > 0 && A.can('cobros.crear') ? '<button class="btn warn" data-rec>Enviar recordatorio de pago</button>' : ''}<button class="btn pri" data-imp>Imprimir estado de cuenta</button>`, onMount: (v, cerrar) => {
+      const rec = $('[data-rec]', v); if (rec) rec.onclick = () => recordarPago({ id: c.id, nombre: c.nombre, telefono: c.telefono, mensaje: d.mensaje_recordatorio }, () => { cerrar(); A.estadoCuentaCliente(id).catch(A.fail); }).catch(A.fail);
+      v.querySelectorAll('[data-cb]').forEach((b) => b.onclick = () => {
+        const x = d.facturas.find((f) => f.id === +b.dataset.cb);
+        cobrarFactura(x, c.nombre, () => { cerrar(); A.render(); A.estadoCuentaCliente(id).catch(A.fail); }).catch(A.fail);
+      });
+      $('[data-csv]', v).onclick = () => A.descargarCSV(`estado-cuenta-${c.nombre.replace(/\W+/g, '-')}.csv`, [['fecha', 'documento', 'tipo', 'detalle', 'cargo_usd', 'abono_usd', 'saldo_usd'], ...d.movimientos.map((m) => [m.fecha, m.doc, TIPO[m.tipo][1], m.detalle, m.cargo || '', m.abono || '', m.tipo === 'contado' ? '' : m.saldo])]);
+      $('[data-imp]', v).onclick = () => {
+        const w = window.open('', '_blank', 'width=900,height=750');
+        if (!w) return A.toast('Permite las ventanas emergentes para imprimir', 'bad');
+        const emp = S.empresa || {};
+        w.document.write(`<html><head><title>Estado de cuenta ${e(c.nombre)}</title><style>body{font:12px system-ui,sans-serif;margin:20px}h2{margin:0}table{width:100%;border-collapse:collapse;margin:8px 0 14px}th,td{border-bottom:1px solid #aaa;padding:5px 6px;text-align:left}.n{text-align:right}</style></head><body>
+          ${emp.logo ? `<img src="${emp.logo}" style="max-height:60px;float:right">` : ''}<h2>Estado de cuenta del cliente</h2><div>${e(emp.nombre || '')} · ${e(A.fecha(new Date().toISOString().replace('T', ' ')))}</div><p><b>${e(c.nombre)}</b> ${c.documento ? '· ' + e(c.documento) : ''}${c.telefono ? ' · ' + e(c.telefono) : ''}<br>Deuda actual: <b>${usd(r.deuda_usd)}</b> · vencida ${usd(r.vencida_usd)} · cobrado en total ${usd(r.cobrado_usd)}</p>
+          <table><thead><tr><th>Venta</th><th>Vence</th><th class="n">Total</th><th class="n">Cobrado</th><th class="n">Saldo</th><th>Estado</th></tr></thead><tbody>${abiertas.map((x) => `<tr><td>${e(x.venta || '')}</td><td>${e(x.vence)}${x.dias_vencida ? ' (' + x.dias_vencida + ' d de atraso)' : ''}</td><td class="n">${usd(x.total_usd)}</td><td class="n">${usd(x.cobrado_usd)}</td><td class="n">${usd(x.saldo_usd)}</td><td>${e(x.estado)}</td></tr>`).join('') || '<tr><td colspan="6">Sin facturas abiertas</td></tr>'}</tbody></table>
+          <h3>Movimientos</h3><table><thead><tr><th>Fecha</th><th>Documento</th><th>Concepto</th><th class="n">Cargo</th><th class="n">Abono</th><th class="n">Saldo</th></tr></thead><tbody>${d.movimientos.filter((m) => m.tipo !== 'contado').map((m) => `<tr><td>${e(A.fecha(m.fecha))}</td><td>${e(m.doc || '')}</td><td>${e(TIPO[m.tipo][1])} · ${e(m.detalle)}</td><td class="n">${m.cargo ? usd(m.cargo) : ''}</td><td class="n">${m.abono ? usd(m.abono) : ''}</td><td class="n">${usd(m.saldo)}</td></tr>`).join('')}</tbody></table></body></html>`);
+        w.document.close(); w.focus(); setTimeout(() => w.print(), 250);
+      };
+    } });
+  };
+
   A.vistas.cxc = async (root, arg) => {
-    const [rows, cuentas] = await Promise.all([api.get('/api/cxc' + A.qs({ estado: 'abiertas', cliente_id: arg })), api.get('/api/cuentas')]);
-    const total = rows.reduce((a, r) => a + r.saldo_usd, 0), venc = rows.filter((r) => r.vencida).reduce((a, r) => a + r.saldo_usd, 0);
-    root.innerHTML = `<h1>Cuentas por cobrar ${arg ? '<a class="btn sm" href="#/cxc">ver todas</a>' : ''}</h1><div class="grid g3" style="margin-bottom:14px"><div class="kpi"><div class="l">Por cobrar</div><div class="v">${usd(total)}</div></div><div class="kpi"><div class="l">Vencido</div><div class="v bad">${usd(venc)}</div></div></div>
-      <div class="card">${A.tabla([{ h: 'Cliente', f: (r) => e(r.cliente) }, { h: 'Venta', f: (r) => e(r.venta || '') }, { h: 'Vence', f: (r) => `<span class="${r.vencida ? 'bad' : ''}">${e(r.vence)}</span>` }, { h: 'Total', n: 1, f: (r) => usd(r.total_usd) }, { h: 'Saldo', n: 1, f: (r) => `<b>${usd(r.saldo_usd)}</b>` }, { h: 'Estado', f: (r) => A.estadoTag(r.estado) },
-        { h: '', f: (r, i) => A.can('cobros.crear') ? `<button class="btn sm pri" data-a="cobrar" data-i="${i}">Cobrar</button>` : '' }], rows, { vacio: 'Sin cuentas por cobrar' })}</div>`;
-    A.acciones(root, { cobrar: (el) => { const c = rows[+el.dataset.i]; const bancos = cuentas.filter((x) => x.activo && x.tipo !== 'caja');
-      return A.form('Cobrar a ' + c.cliente, [{ n: 'medio', l: 'Medio', t: 'select', o: [['efectivo', 'Efectivo'], ['pago_movil', 'Pago móvil'], ['transferencia', 'Transferencia'], ['punto', 'Punto']] }, { n: 'moneda', l: 'Moneda', t: 'select', o: [['USD', 'USD'], ['VES', 'Bs'], ['EUR', 'EUR']] },
-        { n: 'monto', l: `Monto recibido (saldo ${usd(c.saldo_usd)})`, t: 'number', req: true, min: 0.01 }, { n: 'cuenta_id', l: 'Banco receptor (si no es efectivo)', t: 'select', o: [['', '—'], ...bancos.map((x) => [x.id, `${x.nombre} (${x.moneda})`])] }, { n: 'referencia', l: 'Referencia (si no es efectivo)' }],
-        { medio: 'efectivo', moneda: 'USD', monto: c.saldo_usd }, async (v) => { await api.post(`/api/cxc/${c.id}/cobrar`, { pagos: [{ ...v, cuenta_id: v.cuenta_id ? +v.cuenta_id : undefined }] }); A.ok('Cobro registrado'); A.render(); }); } });
+    const [rows, venc] = await Promise.all([api.get('/api/cxc' + A.qs({ estado: 'abiertas', cliente_id: arg })), api.get('/api/cxc/vencidos')]);
+    const total = rows.reduce((a, r) => a + r.saldo_usd, 0), vencido = rows.filter((r) => r.vencida).reduce((a, r) => a + r.saldo_usd, 0);
+    root.innerHTML = `<h1>Cuentas por cobrar ${arg ? '<a class="btn sm" href="#/cxc">ver todas</a>' : ''}</h1><div class="grid g4" style="margin-bottom:14px"><div class="kpi"><div class="l">Por cobrar</div><div class="v">${usd(total)}</div></div><div class="kpi"><div class="l">Vencido</div><div class="v bad">${usd(vencido)}</div>
+        ${venc.clientes.length ? `<div class="s"><button class="btn sm pri" data-a="vencidos" style="margin-top:6px">Recordar pago a ${venc.clientes.length} cliente(s)</button></div>` : '<div class="s">Nada vencido</div>'}</div>
+        <div class="kpi" style="grid-column: span 2"><div class="l">Historial de un cliente</div><input id="bq" placeholder="Buscar por nombre, documento o teléfono" autocomplete="off" style="width:100%;margin-top:4px"><div id="bres" style="margin-top:6px"></div></div></div>
+      <div class="card">${A.tabla([{ h: 'Cliente', f: (r) => `<a href="#" data-a="hist" data-c="${r.cliente_id}"><b>${e(r.cliente)}</b></a>` }, { h: 'Venta', f: (r) => e(r.venta || '') }, { h: 'Vence', f: (r) => `<span class="${r.vencida ? 'bad' : ''}">${e(r.vence)}</span>` }, { h: 'Total', n: 1, f: (r) => usd(r.total_usd) }, { h: 'Saldo', n: 1, f: (r) => `<b>${usd(r.saldo_usd)}</b>` }, { h: 'Estado', f: (r) => A.estadoTag(r.estado) },
+        { h: '', f: (r, i) => `<button class="btn sm" data-a="hist" data-c="${r.cliente_id}">Historial</button> ${r.vencida && A.can('cobros.crear') ? `<button class="btn sm" data-a="recordar" data-c="${r.cliente_id}">Recordar</button> ` : ''}${A.can('cobros.crear') ? `<button class="btn sm pri" data-a="cobrar" data-i="${i}">Cobrar</button>` : ''}` }], rows, { vacio: 'Sin cuentas por cobrar' })}</div>`;
+    A.acciones(root, {
+      cobrar: (el) => { const c = rows[+el.dataset.i]; return cobrarFactura(c, c.cliente, () => A.render()); },
+      hist: (el, ev) => { ev.preventDefault(); return A.estadoCuentaCliente(+el.dataset.c).catch(A.fail); },
+      recordar: (el) => { const c = venc.clientes.find((x) => x.id === +el.dataset.c); return recordarPago(c, () => A.render()); },
+      vencidos: () => listaVencidos()
+    });
+    // para ver el historial de un cliente que ya no debe nada (y por eso no aparece en la lista)
+    $('#bq', root).oninput = A.debounce(async () => {
+      const t = $('#bq', root).value.trim(), res = $('#bres', root);
+      if (t.length < 2) { res.innerHTML = ''; return; }
+      const cl = (await api.get('/api/clientes' + A.qs({ q: t }))).slice(0, 6);
+      res.innerHTML = cl.length ? cl.map((c) => `<div><a href="#" data-a="hist" data-c="${c.id}">${e(c.nombre)}</a> <span class="muted" style="font-size:11px">${e(c.documento || c.telefono || '')}</span></div>`).join('') : '<span class="muted">Sin resultados</span>';
+    }, 220);
   };
 
   // ======================= BANCOS Y CAJAS =======================

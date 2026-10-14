@@ -35,8 +35,10 @@
   function avisar(nuevos) {
     pitar();
     try { navigator.vibrate && navigator.vibrate([300, 120, 300, 120, 300]); } catch {}
-    toast(nuevos.length === 1 ? 'Nuevo pedido para repartir: ' + nuevos[0].pedido : `${nuevos.length} pedidos nuevos para repartir`, 'ok');
-    try { if ('Notification' in window && Notification.permission === 'granted') new Notification('Nuevo pedido para repartir', { body: nuevos.map((n) => `${n.pedido} · ${n.zona || ''}`).join('\n') }); } catch {}
+    const asignado = nuevos.every((n) => n.repartidor_id);
+    const titulo = nuevos.length === 1 ? (asignado ? 'Te asignaron el pedido ' : 'Nuevo pedido para repartir: ') + nuevos[0].pedido : `${nuevos.length} pedidos ${asignado ? 'asignados a ti' : 'nuevos para repartir'}`;
+    toast(titulo, 'ok');
+    try { if ('Notification' in window && Notification.permission === 'granted') new Notification(titulo, { body: nuevos.map((n) => `${n.pedido} · ${n.zona || ''}`).join('\n') }); } catch {}
     clearInterval(parpadeo); let on = false;
     parpadeo = setInterval(() => { document.title = on ? titulo0 : `(${nuevos.length}) ¡Nuevo pedido!`; on = !on; }, 900);
     setTimeout(() => { clearInterval(parpadeo); document.title = titulo0; }, 15000);
@@ -44,7 +46,7 @@
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { clearInterval(parpadeo); document.title = titulo0; cargar(); } });
 
   // ---------- sesión ----------
-  function salir(render = true) { token = null; datos = null; ls.del(K('token')); clearInterval(timer); if (render) pintar(); }
+  function salir(render = true) { token = null; datos = null; ls.del(K('token')); clearInterval(timer); if (flujo) flujo.abort(); if (render) pintar(); }
   function pintarLogin(info = {}) {
     $('#r').innerHTML = `<div class="r-head"><b>🛵 Reparto</b></div><div class="r-wrap"><form class="card form" id="lf"><div class="full"><h1 style="margin:0">Entrar</h1><p class="muted" style="margin:4px 0 0">Con el usuario que te dio el abasto.</p></div>
       ${info.pedirCodigo ? `<div class="full"><label>Código del abasto</label><input name="empresa" value="${e(slug)}" autocapitalize="none" required></div>` : ''}
@@ -64,7 +66,29 @@
     if (!token) { let info = {}; try { info = { pedirCodigo: !slug && !(await api('GET', '/api/plataforma/info')).unica }; } catch {} return pintarLogin(info); }
     clearInterval(timer);
     await cargar();
-    timer = setInterval(cargar, 10000);
+    timer = setInterval(cargar, 10000); // respaldo: si la conexión directa se cae, igual se consulta cada pocos segundos
+    conectarEventos();
+  }
+  // Conexión abierta con el servidor: cuando cambia algo (te asignan un pedido, uno queda listo, otro repartidor toma uno) llega al instante.
+  let flujo = null;
+  async function conectarEventos() {
+    if (!token || flujo) return;
+    const ctl = flujo = new AbortController();
+    try {
+      const r = await fetch('/api/reparto/eventos', { headers: { Authorization: 'Bearer ' + token }, signal: ctl.signal });
+      if (!r.ok || !r.body) throw new Error('sin flujo');
+      const lector = r.body.getReader(), dec = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { value, done } = await lector.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf('\n\n')) >= 0) { const bloque = buf.slice(0, i); buf = buf.slice(i + 2); if (/^data: /m.test(bloque)) cargar(); }
+      }
+    } catch { /* se reintenta abajo */ }
+    flujo = null;
+    if (token) setTimeout(conectarEventos, 3000);
   }
 
   // ---------- datos ----------
@@ -72,9 +96,11 @@
     if (!token) return;
     try {
       datos = await api('GET', '/api/reparto/mis'); sinConexion = false;
-      const porBuscar = [...datos.asignados, ...datos.disponibles];
-      const nuevos = porBuscar.filter((o) => !vistos.has(o.id));
-      if (nuevos.length) { nuevos.forEach((o) => vistos.add(o.id)); ls.set(K('vistos'), JSON.stringify([...vistos].slice(-300))); if (!primeraCarga) avisar(nuevos); }
+      // se avisa de lo que no se había visto, incluido un pedido que te asignan aunque ya estuviera en la lista como disponible
+      const porBuscar = [...datos.asignados, ...datos.disponibles, ...datos.proximos];
+      const clave = (o) => o.id + '/' + (o.repartidor_id || '');
+      const nuevos = porBuscar.filter((o) => !vistos.has(clave(o)));
+      if (nuevos.length) { nuevos.forEach((o) => vistos.add(clave(o))); ls.set(K('vistos'), JSON.stringify([...vistos].slice(-300))); if (!primeraCarga) avisar(nuevos); }
       primeraCarga = false;
     } catch (er) { if (er.red) sinConexion = true; else if (token) falla(er); }
     dibujar();
@@ -86,13 +112,14 @@
     const contacto = o.contacto || o.cliente, t = o.tel_contacto || o.tel_cliente;
     const nuevo = tipo === 'buscar' && !o.visto;
     return `<div class="entrega ${nuevo ? '' : ''}"><div class="row" style="justify-content:space-between;align-items:center"><b>${e(o.pedido)} · ${e(o.orden)}</b>
-        <span>${tipo === 'buscar' ? (o.repartidor_id ? '<span class="tag info">Asignado a ti</span>' : '<span class="tag warn">Disponible</span>') : tipo === 'camino' ? '<span class="tag ok">En camino</span>' : '<span class="tag ok">Entregado</span>'}</span></div>
+        <span>${tipo === 'preparando' ? '<span class="tag info">Asignado a ti · se está preparando</span>' : tipo === 'buscar' ? (o.repartidor_id ? '<span class="tag info">Asignado a ti</span>' : '<span class="tag warn">Disponible</span>') : tipo === 'camino' ? '<span class="tag ok">En camino</span>' : '<span class="tag ok">Entregado</span>'}</span></div>
       <div class="dir">${e(o.direccion || 'Sin dirección')}${o.zona ? ' — ' + e(o.zona) : ''}</div>
       ${cobro(o)}
       ${o.referencia_entrega ? `<div class="muted">Referencia: ${e(o.referencia_entrega)}</div>` : ''}
       <div style="margin-top:6px">${e(contacto)} · <b>${fmUn(o.unidades)}</b></div>${o.nota ? `<div class="muted">Nota: ${e(o.nota)}</div>` : ''}
       ${tipo === 'entregado' ? `<div class="muted" style="margin-top:6px">Entregado ${e((o.entregado_en || '').slice(11, 16))}${o.receptor ? ' a ' + e(o.receptor) : ''}</div>` : ''}
       <div class="acc">${t ? `<a class="btn" href="tel:${tel(t)}">📞 Llamar</a><a class="btn" target="_blank" href="https://wa.me/${wa(t)}">WhatsApp</a>` : ''}<a class="btn" target="_blank" href="${mapa(o)}">🗺 Mapa</a></div>
+      ${tipo === 'preparando' ? '<div class="muted" style="margin-top:6px">Aún no está listo: te avisaremos cuando puedas pasar a buscarlo.</div>' : ''}
       ${tipo === 'buscar' ? `<div class="acc">${o.repartidor_id ? '' : `<button class="btn" data-a="tomar" data-id="${o.id}">Tomar este pedido</button>`}<button class="btn pri" data-a="salir" data-id="${o.id}">Lo recogí: salir en camino</button></div>` : ''}
       ${tipo === 'camino' ? `<div class="acc"><button class="btn pri" data-a="entregar" data-id="${o.id}" data-p="${e(o.pedido)}">✔ Entregado</button></div>` : ''}</div>`;
   }
@@ -109,7 +136,7 @@
   function dibujar() {
     if (!datos) return;
     const buscar = [...datos.asignados, ...datos.disponibles];
-    const tabs = [['buscar', 'Por buscar', buscar.length], ['camino', 'En camino', datos.en_camino.length], ['entregados', 'Entregados hoy', datos.entregados.length]];
+    const tabs = [['buscar', 'Por buscar', buscar.length + datos.proximos.length], ['camino', 'En camino', datos.en_camino.length], ['entregados', 'Entregados hoy', datos.entregados.length]];
     const lista = pestana === 'buscar' ? buscar : pestana === 'camino' ? datos.en_camino : datos.entregados;
     const tipo = pestana === 'buscar' ? 'buscar' : pestana === 'camino' ? 'camino' : 'entregado';
     const notif = 'Notification' in window && Notification.permission === 'default';
@@ -117,9 +144,9 @@
       <div class="r-wrap">${sinConexion ? '<div class="semaforo rojo" style="margin-bottom:12px"><span class="luz"></span><span>Sin conexión: reintentando…</span></div>' : ''}
         ${notif ? '<div class="semaforo amarillo" style="margin-bottom:12px"><span class="luz"></span><span style="flex:1">Activa los avisos para enterarte aunque la pantalla esté apagada.</span><button class="btn sm" data-a="notif">Activar</button></div>' : ''}
         <div class="r-tabs">${tabs.map(([k, t, n]) => `<button class="btn ${k === pestana ? 'pri' : ''}" data-a="pestana" data-k="${k}">${t} (${n})</button>`).join('')}</div>
-        ${pestana === 'buscar' && datos.proximos.length ? `<div class="muted" style="margin-bottom:10px">🕑 Se están preparando para ti: ${datos.proximos.map((o) => e(o.pedido)).join(', ')}</div>` : ''}
-        ${lista.length ? lista.map((o) => tarjeta(o, tipo)).join('') : `<div class="card empty">${pestana === 'buscar' ? 'No hay pedidos para buscar. Te avisaremos con un pitido cuando haya uno listo.' : pestana === 'camino' ? 'No llevas pedidos en camino.' : 'Aún no has entregado pedidos hoy.'}</div>`}
-        <p class="muted c" style="font-size:12px">Actualizado ${e((datos.ahora || '').slice(11, 19))} · se refresca solo cada 10 segundos</p></div>`;
+        ${pestana === 'buscar' ? datos.proximos.map((o) => tarjeta(o, 'preparando')).join('') : ''}
+        ${lista.length || (pestana === 'buscar' && datos.proximos.length) ? lista.map((o) => tarjeta(o, tipo)).join('') : `<div class="card empty">${pestana === 'buscar' ? 'No hay pedidos para buscar. Te avisaremos con un pitido cuando haya uno listo.' : pestana === 'camino' ? 'No llevas pedidos en camino.' : 'Aún no has entregado pedidos hoy.'}</div>`}
+        <p class="muted c" style="font-size:12px">Actualizado ${e((datos.ahora || '').slice(11, 19))} · se actualiza al instante cuando hay cambios</p></div>`;
   }
 
   // ---------- acciones ----------

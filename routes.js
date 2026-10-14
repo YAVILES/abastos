@@ -355,7 +355,7 @@ function leerTasas(body) {
   if (eur < 0.3 || eur > 3) err(400, `La tasa del euro no es coherente: equivale a ${eur.toLocaleString('es-VE')} USD por cada euro (lo normal está cerca de 1). Escribe los bolívares por 1 € tal como los publica el BCV.`);
   return { ves, eur };
 }
-staff('GET', '/api/jornada', null, () => ({ jornada: L.jornadaAbierta(), ultima: L.ultimaTasa() }));
+staff('GET', '/api/jornada', null, () => ({ jornada: L.jornadaAbierta(), ultima: L.ultimaTasa(), tasa_hoy: D.get('SELECT * FROM tasas_cambio WHERE fecha=?', D.hoy()) || null }));
 staff('GET', '/api/jornadas', 'jornada.gestionar', () => D.all('SELECT * FROM jornadas ORDER BY id DESC LIMIT 60'));
 staff('POST', '/api/jornada/abrir', 'jornada.gestionar', ({ body, user }) => D.tx(() => {
   if (L.jornadaAbierta()) err(409, 'Ya hay un día operativo abierto');
@@ -363,19 +363,50 @@ staff('POST', '/api/jornada/abrir', 'jornada.gestionar', ({ body, user }) => D.t
   const fecha = D.hoy();
   const id = D.insert(`INSERT INTO jornadas(fecha,estado,tasa_usd_ves,tasa_eur_usd,fuente,obs,usuario_apertura,abierta_en) VALUES(?,?,?,?,?,?,?,?)`,
     fecha, 'abierta', ves, eur, s(body.fuente) || 'BCV', s(body.obs), user.usuario, D.ahora());
-  D.insert('INSERT INTO tasas_log(jornada_id,fecha,usuario,tasa_usd_ves,tasa_eur_usd,fuente,motivo) VALUES(?,?,?,?,?,?,?)', id, D.ahora(), user.usuario, ves, eur, s(body.fuente) || 'BCV', 'Apertura del día');
+  guardarTasaFecha(fecha, ves, eur, s(body.fuente) || 'BCV', user.usuario);
+  D.insert('INSERT INTO tasas_log(jornada_id,fecha,usuario,tasa_usd_ves,tasa_eur_usd,fuente,motivo) VALUES(?,?,?,?,?,?,?)', id, D.ahora(), user.usuario, ves, eur, s(body.fuente) || 'BCV', 'Apertura del día ' + fecha);
   L.audit(user.usuario, 'jornada_abierta', 'jornada', id, { fecha, ves, eur });
   return { id };
 }));
-staff('POST', '/api/jornada/tasas', 'jornada.gestionar', ({ body, user }) => D.tx(() => {
-  const j = L.requireJornada();
+// Cada tasa pertenece a una fecha. Si la fecha es la del día operativo abierto, también cambia la tasa con la que se vende desde ese momento.
+const FECHA_RE = /^\d{4}-\d{2}-\d{2}$/;
+function guardarTasaFecha(fecha, ves, eur, fuente, usuario) {
+  const ya = D.get('SELECT fecha FROM tasas_cambio WHERE fecha=?', fecha);
+  if (ya) D.run('UPDATE tasas_cambio SET tasa_usd_ves=?, tasa_eur_usd=?, fuente=?, usuario=?, actualizada_en=? WHERE fecha=?', ves, eur, fuente, usuario, D.ahora(), fecha);
+  else D.run('INSERT INTO tasas_cambio(fecha,tasa_usd_ves,tasa_eur_usd,fuente,usuario,registrada_en) VALUES(?,?,?,?,?,?)', fecha, ves, eur, fuente, usuario, D.ahora());
+  return !!ya;
+}
+function registrarTasa(body, user) {
+  const j = L.jornadaAbierta();
+  const fecha = String(body.fecha || (j && j.fecha) || '').trim();
+  if (!FECHA_RE.test(fecha) || Number.isNaN(Date.parse(fecha))) err(400, 'Indica la fecha a la que corresponde la tasa');
+  if (fecha > D.sumarDias(7)) err(400, 'La fecha no puede pasar de 7 días en el futuro');
   const { ves, eur } = leerTasas(body);
-  const motivo = req(body.motivo, 'Indica el motivo de la actualización');
-  D.run('UPDATE jornadas SET tasa_usd_ves=?, tasa_eur_usd=?, fuente=? WHERE id=?', ves, eur, s(body.fuente) || j.fuente, j.id);
-  D.insert('INSERT INTO tasas_log(jornada_id,fecha,usuario,tasa_usd_ves,tasa_eur_usd,fuente,motivo) VALUES(?,?,?,?,?,?,?)', j.id, D.ahora(), user.usuario, ves, eur, s(body.fuente) || j.fuente, motivo);
-  L.audit(user.usuario, 'tasa_actualizada', 'jornada', j.id, { antes: [j.tasa_usd_ves, j.tasa_eur_usd], despues: [ves, eur], motivo });
-  return { ok: true };
-}));
+  const fuente = s(body.fuente) || 'BCV';
+  const existente = D.get('SELECT * FROM tasas_cambio WHERE fecha=?', fecha);
+  const motivo = s(body.motivo);
+  if ((existente || fecha < D.hoy()) && !motivo) err(400, existente ? 'Esa fecha ya tiene tasa: indica el motivo del cambio' : 'La fecha es anterior a hoy: indica el motivo');
+  guardarTasaFecha(fecha, ves, eur, fuente, user.usuario);
+  const esDelDia = !!(j && j.fecha === fecha);
+  if (esDelDia) D.run('UPDATE jornadas SET tasa_usd_ves=?, tasa_eur_usd=?, fuente=? WHERE id=?', ves, eur, fuente, j.id);
+  D.insert('INSERT INTO tasas_log(jornada_id,fecha,usuario,tasa_usd_ves,tasa_eur_usd,fuente,motivo) VALUES(?,?,?,?,?,?,?)', esDelDia ? j.id : null, D.ahora(), user.usuario, ves, eur, fuente, `[${fecha}] ${motivo || 'Tasa registrada'}`);
+  L.audit(user.usuario, 'tasa_registrada', 'tasa', fecha, { antes: existente ? [existente.tasa_usd_ves, existente.tasa_eur_usd] : null, despues: [ves, eur], motivo });
+  return { ok: true, fecha, actualiza_el_dia_abierto: esDelDia };
+}
+staff('POST', '/api/jornada/tasas', 'jornada.gestionar', ({ body, user }) => D.tx(() => { L.requireJornada(); return registrarTasa({ ...body, fecha: body.fecha || L.jornadaAbierta().fecha }, user); }));
+staff('POST', '/api/tasas', 'jornada.gestionar', ({ body, user }) => D.tx(() => registrarTasa(body, user)));
+staff('GET', '/api/tasas', null, ({ query }) => {
+  const hoy = D.hoy();
+  const lista = D.all('SELECT * FROM tasas_cambio ORDER BY fecha DESC LIMIT 400').slice(0, Math.min(Number(query.limite) || 60, 400));
+  const j = L.jornadaAbierta();
+  // fechas sin tasa desde el primer registro hasta hoy (días en que no se operó o no se cargó)
+  const todas = new Set(D.all('SELECT fecha FROM tasas_cambio').map((x) => x.fecha));
+  const primera = D.get('SELECT MIN(fecha) AS f FROM tasas_cambio').f;
+  const faltan = [];
+  if (primera) for (let d = primera; d < hoy && faltan.length < 60; d = D.sumarDias(1, d)) if (!todas.has(d)) faltan.push(d);
+  return { hoy, tasa_hoy: D.get('SELECT * FROM tasas_cambio WHERE fecha=?', hoy) || null, ultima: D.get('SELECT * FROM tasas_cambio WHERE fecha<=? ORDER BY fecha DESC LIMIT 1', hoy) || null,
+    jornada_fecha: j ? j.fecha : null, desactualizada: !!(j && j.fecha < hoy), lista, fechas_sin_tasa: faltan };
+});
 staff('GET', '/api/jornada/tasas-log', 'jornada.gestionar', () => D.all('SELECT * FROM tasas_log ORDER BY id DESC LIMIT 100'));
 staff('GET', '/api/jornada/pre-cierre', 'jornada.gestionar', () => preCierre());
 function preCierre() {
@@ -504,12 +535,22 @@ staff('PUT', '/api/productos/:id', 'productos.editar', ({ params, body, user, pe
   D.run(`UPDATE productos SET nombre=?,categoria_id=?,marca=?,presentacion=?,unidad_compra=?,unidad_venta=?,factor=?,costo_usd=?,precio_usd=?,margen=?,precio_fijo=?,stock_min=?,stock_max=?,ubicacion=?,proveedor_id=?,imagen=?,activo=? WHERE id=?`,
     d.nombre, d.categoria_id, d.marca, d.presentacion, d.uc, d.uv, d.factor, d.costo, d.precio, d.margen, d.fijo, d.smin, d.smax, d.ubicacion, d.proveedor_id, d.imagen, body.activo == null ? p.activo : bool(body.activo), p.id);
   if (body.codigos) guardarBarras(p.id, body.codigos);
+  // un cambio manual del costo queda en el kardex como revalorización: el saldo pasa a valer al costo nuevo
+  if (d.costo !== p.costo_usd) L.mov(p.id, 'revalorizacion', 0, d.costo, 'Cambio manual del costo', 'producto', p.id, user.usuario, L.jornadaAbierta()?.id);
   if (cambiaPrecio) L.audit(user.usuario, 'cambio_precio_costo', 'producto', p.id, { antes: { costo: p.costo_usd, precio: p.precio_usd, margen: p.margen }, despues: { costo: d.costo, precio: d.precio, margen: d.margen } });
   return { ok: true };
 }));
+// Kardex valorizado al costo promedio: cada fila trae el costo con el que se valoró el movimiento y el saldo (existencia, costo promedio y valor) que dejó
 staff('GET', '/api/productos/:id/kardex', null, ({ params }) => {
-  let saldo = 0;
-  return D.all('SELECT * FROM inventario_movimientos WHERE producto_id=? ORDER BY id', params.id).map((m) => ({ ...m, saldo: (saldo += m.cantidad) })).reverse();
+  const p = D.get('SELECT id, codigo, nombre, costo_usd FROM productos WHERE id=?', params.id);
+  if (!p) err(404, 'Producto no encontrado');
+  const filas = D.all('SELECT * FROM inventario_movimientos WHERE producto_id=? ORDER BY id', p.id)
+    .map((m) => ({ ...m, valor_usd: r4(m.cantidad * m.costo_usd), saldo: m.saldo_cant }));
+  const ult = filas[filas.length - 1];
+  return {
+    producto: p, existencia: ult ? ult.saldo_cant : 0, costo_promedio: ult ? ult.costo_prom : p.costo_usd, valor_usd: ult ? r2(ult.saldo_valor) : 0,
+    movimientos: filas.reverse()
+  };
 });
 
 // ---- importación CSV ----
@@ -558,6 +599,7 @@ staff('POST', '/api/productos/importar', 'productos.editar', ({ body, user }) =>
           D.run(`UPDATE productos SET nombre=?,categoria_id=?,marca=?,presentacion=?,unidad_compra=?,unidad_venta=?,factor=?,costo_usd=?,precio_usd=?,margen=?,precio_fijo=?,stock_min=?,stock_max=?,ubicacion=?,proveedor_id=? WHERE id=?`,
             d.nombre, d.categoria_id, d.marca, d.presentacion, d.uc, d.uv, d.factor, d.costo, d.precio, d.margen, d.fijo, d.smin, d.smax, d.ubicacion, d.proveedor_id, ex.id);
           if (barra && !D.get('SELECT 1 FROM codigos_barra WHERE codigo=?', barra)) D.run('INSERT INTO codigos_barra(codigo,producto_id,principal) VALUES(?,?,0)', barra, ex.id);
+          if (d.costo !== ex.costo_usd) L.mov(ex.id, 'revalorizacion', 0, d.costo, 'Cambio de costo por importación CSV', 'producto', ex.id, user.usuario, null);
           res.actualizados++;
         } else {
           limiteProductos();
@@ -609,23 +651,128 @@ staff('GET', '/api/clientes', null, ({ query }) => {
   if (query.con_credito) w.push('c.credito_habilitado=1');
   return D.all(`${SQL_CLIENTE} ${w.length ? 'WHERE ' + w.join(' AND ') : ''} ORDER BY c.nombre LIMIT 500`, ...a);
 });
+// Búsqueda exacta por cédula o RIF (con o sin letra, con o sin guiones); la usa el punto de venta al identificar al cliente
+staff('GET', '/api/clientes/por-documento', null, ({ query }) => {
+  const n = normalizarDocumento(query.doc);
+  if (!n || n.replace(/\D/g, '').length < 5) err(400, 'Escribe la cédula o el RIF completo');
+  const f = clientePorDocumento(n);
+  return { documento: n, cliente: f ? D.get(`${SQL_CLIENTE} WHERE c.id=?`, D.hoy(), f.id) : null };
+});
+// Estado de cuenta del cliente: lo que debe, cada factura a crédito con sus cobros y el historial de movimientos con saldo corriente
+// ---- Recordatorios de saldos vencidos ----
+// El sistema arma el mensaje (con lo que debe, las facturas y su vencimiento) y registra cada recordatorio; el envío se hace por WhatsApp desde el teléfono de quien cobra.
+function vencidosDe(clienteId) {
+  return D.all(`SELECT x.id, x.vence, x.saldo_usd, v.numero AS venta FROM cxc x LEFT JOIN ventas v ON v.id=x.venta_id
+    WHERE x.cliente_id=? AND x.estado IN ('pendiente','abonada') AND x.vence<? ORDER BY x.vence, x.id`, clienteId, D.hoy());
+}
+function mensajeRecordatorio(c, facturas) {
+  const emp = D.param('empresa'), t = L.jornadaAbierta() || L.ultimaTasa();
+  const total = r2(facturas.reduce((a, f) => a + f.saldo_usd, 0));
+  const ves = t ? r2(total * t.tasa_usd_ves) : null;
+  const lista = facturas.map((f) => `${f.venta || 'factura'} (venció el ${f.vence}, saldo ${r2(f.saldo_usd).toFixed(2)} USD)`).join('; ');
+  return `Hola ${c.nombre}, le escribimos de ${emp.nombre}. Le recordamos que tiene ${facturas.length === 1 ? 'una cuenta vencida' : facturas.length + ' cuentas vencidas'} por ${total.toFixed(2)} USD${ves ? ` (unos ${ves.toLocaleString('es-VE', { minimumFractionDigits: 2 })} Bs a la tasa de hoy)` : ''}: ${lista}. Le agradecemos regularizar su pago. Si ya lo hizo, envíenos el comprobante. ¡Gracias!`;
+}
+staff('GET', '/api/cxc/vencidos', null, () => {
+  const hoy = D.hoy();
+  const dif = (a, b) => Math.round((new Date(a + 'T12:00:00') - new Date(b + 'T12:00:00')) / 86400000);
+  const clientes = D.all(`SELECT c.id, c.nombre, c.documento, c.telefono FROM clientes c WHERE EXISTS (SELECT 1 FROM cxc x WHERE x.cliente_id=c.id AND x.estado IN ('pendiente','abonada') AND x.vence<?) ORDER BY c.nombre`, hoy).map((c) => {
+    const fs = vencidosDe(c.id);
+    const ult = D.get('SELECT fecha FROM recordatorios WHERE cliente_id=? ORDER BY id DESC LIMIT 1', c.id);
+    return { ...c, vencido_usd: r2(fs.reduce((a, f) => a + f.saldo_usd, 0)), facturas: fs.length, dias_max: dif(hoy, fs[0].vence), ultimo_recordatorio: ult ? ult.fecha : null, mensaje: mensajeRecordatorio(c, fs) };
+  }).sort((a, b) => b.vencido_usd - a.vencido_usd);
+  return { total_vencido_usd: r2(clientes.reduce((a, c) => a + c.vencido_usd, 0)), clientes };
+});
+staff('POST', '/api/clientes/:id/recordatorio', 'cobros.crear', ({ params, body, user }) => D.tx(() => {
+  const c = D.get('SELECT * FROM clientes WHERE id=?', params.id);
+  if (!c) err(404, 'Cliente no encontrado');
+  const fs = vencidosDe(c.id);
+  if (!fs.length) err(409, 'Este cliente no tiene saldos vencidos');
+  const mensaje = req(body.mensaje, 'El mensaje no puede estar vacío');
+  const medio = ['whatsapp', 'llamada', 'otro'].includes(body.medio) ? body.medio : 'whatsapp';
+  const monto = r2(fs.reduce((a, f) => a + f.saldo_usd, 0));
+  const id = D.insert('INSERT INTO recordatorios(cliente_id,fecha,usuario,medio,monto_usd,facturas,mensaje) VALUES(?,?,?,?,?,?,?)', c.id, D.ahora(), user.usuario, medio, monto, fs.map((f) => f.venta).filter(Boolean).join(', '), mensaje);
+  L.audit(user.usuario, 'recordatorio_cobro', 'cliente', c.id, { medio, monto_usd: monto });
+  return { id, telefono: c.telefono, monto_usd: monto };
+}));
+staff('GET', '/api/clientes/:id/estado-cuenta', null, ({ params }) => {
+  const c = D.get('SELECT * FROM clientes WHERE id=?', params.id);
+  if (!c) err(404, 'Cliente no encontrado');
+  const hoy = D.hoy();
+  const dif = (a, b) => Math.round((new Date(a + 'T12:00:00') - new Date(b + 'T12:00:00')) / 86400000);
+  const cxcs = D.all('SELECT x.*, v.numero AS venta, v.total_usd AS venta_total, v.anulada_en FROM cxc x LEFT JOIN ventas v ON v.id=x.venta_id WHERE x.cliente_id=? ORDER BY x.id', c.id);
+  const cobros = D.all(`SELECT p.*, v.numero AS venta, cu.nombre AS cuenta FROM pagos p JOIN cxc x ON x.id=p.cxc_id LEFT JOIN ventas v ON v.id=x.venta_id LEFT JOIN cuentas cu ON cu.id=p.cuenta_id
+    WHERE x.cliente_id=? AND p.tipo='cobro' AND p.anulado=0 ORDER BY p.fecha, p.id`, c.id);
+  const contado = D.all(`SELECT v.id, v.numero, v.fecha, v.total_usd FROM ventas v WHERE v.cliente_id=? AND v.estado='completada' AND NOT EXISTS (SELECT 1 FROM cxc x WHERE x.venta_id=v.id) ORDER BY v.id DESC LIMIT 200`, c.id);
+  const cobrosPorCxc = new Map();
+  for (const g of cobros) { if (!cobrosPorCxc.has(g.cxc_id)) cobrosPorCxc.set(g.cxc_id, []); cobrosPorCxc.get(g.cxc_id).push({ fecha: g.fecha, medio: g.medio, moneda: g.moneda, monto: g.monto, tasa: g.tasa, monto_usd: g.monto_usd, cuenta: g.cuenta, referencia: g.referencia, usuario: g.usuario }); }
+
+  const mov = [];
+  for (const x of cxcs) {
+    const parcial = x.venta_total && x.venta_total - x.total_usd > 0.005;
+    mov.push({ fecha: x.creado, orden: 0, tipo: 'cargo', doc: x.venta, detalle: `${parcial ? 'la otra parte se pagó al momento · ' : ''}vence ${x.vence}`, cargo: x.total_usd, abono: 0 });
+    if (x.estado === 'anulada') mov.push({ fecha: x.anulada_en || x.creado, orden: 2, tipo: 'reverso', doc: x.venta, detalle: 'Venta anulada', cargo: 0, abono: x.total_usd });
+  }
+  for (const g of cobros) mov.push({ fecha: g.fecha, orden: 1, tipo: 'cobro', doc: g.venta, detalle: `${g.monto} ${g.moneda}${g.moneda !== 'USD' ? ` (tasa ${g.tasa})` : ''} · ${g.medio.replace('_', ' ')}${g.cuenta ? ' en ' + g.cuenta : ''}${g.referencia ? ' · ref. ' + g.referencia : ''}${g.usuario ? ' · ' + g.usuario : ''}`, cargo: 0, abono: g.monto_usd });
+  for (const v of contado) mov.push({ fecha: v.fecha, orden: 0, tipo: 'contado', doc: v.numero, detalle: 'no genera deuda', cargo: 0, abono: 0, monto_info: v.total_usd });
+  mov.sort((a, b) => (a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : a.orden - b.orden));
+  let saldo = 0;
+  for (const m of mov) { saldo = r2(saldo + m.cargo - m.abono); m.saldo = saldo; }
+
+  const abiertas = cxcs.filter((x) => ['pendiente', 'abonada'].includes(x.estado));
+  const ant = { vigente: 0, d1_30: 0, d31_60: 0, d60_mas: 0 };
+  for (const x of abiertas) { const d = dif(hoy, x.vence); ant[d <= 0 ? 'vigente' : d <= 30 ? 'd1_30' : d <= 60 ? 'd31_60' : 'd60_mas'] += x.saldo_usd; }
+  const plazos = cxcs.filter((x) => x.estado === 'pagada' && cobrosPorCxc.has(x.id)).map((x) => dif(cobrosPorCxc.get(x.id).slice(-1)[0].fecha.slice(0, 10), x.creado.slice(0, 10)));
+  const deuda = abiertas.reduce((a, x) => a + x.saldo_usd, 0);
+  return {
+    cliente: { id: c.id, nombre: c.nombre, documento: c.documento, telefono: c.telefono, direccion: c.direccion, estado: c.estado, credito_habilitado: c.credito_habilitado, limite_usd: c.limite_usd, dias_credito: c.dias_credito },
+    resumen: {
+      deuda_usd: r2(deuda), vencida_usd: r2(abiertas.filter((x) => x.vence < hoy).reduce((a, x) => a + x.saldo_usd, 0)),
+      por_vencer_7d_usd: r2(abiertas.filter((x) => x.vence >= hoy && dif(x.vence, hoy) <= 7).reduce((a, x) => a + x.saldo_usd, 0)), facturas_abiertas: abiertas.length,
+      credito_disponible_usd: c.credito_habilitado ? r2(Math.max(0, c.limite_usd - deuda)) : 0,
+      ventas_credito_usd: r2(cxcs.filter((x) => x.estado !== 'anulada').reduce((a, x) => a + x.total_usd, 0)), ventas_contado_usd: r2(contado.reduce((a, v) => a + v.total_usd, 0)),
+      cobrado_usd: r2(cobros.reduce((a, g) => a + g.monto_usd, 0)), ultima_compra: D.get("SELECT MAX(fecha) AS f FROM ventas WHERE cliente_id=? AND estado='completada'", c.id).f,
+      ultimo_cobro: cobros.length ? cobros[cobros.length - 1].fecha : null, dias_promedio_cobro: plazos.length ? r2(plazos.reduce((a, b) => a + b, 0) / plazos.length) : null,
+      antiguedad: { vigente: r2(ant.vigente), d1_30: r2(ant.d1_30), d31_60: r2(ant.d31_60), d60_mas: r2(ant.d60_mas) }
+    },
+    facturas: cxcs.map((x) => ({ id: x.id, venta: x.venta, creado: x.creado, vence: x.vence, estado: x.estado, total_usd: x.total_usd, cobrado_usd: r2(x.total_usd - x.saldo_usd), saldo_usd: x.saldo_usd,
+      dias_vencida: ['pendiente', 'abonada'].includes(x.estado) ? Math.max(0, dif(hoy, x.vence)) : 0, cobros: cobrosPorCxc.get(x.id) || [] })).reverse(),
+    recordatorios: D.all('SELECT fecha, usuario, medio, monto_usd, mensaje FROM recordatorios WHERE cliente_id=? ORDER BY id DESC LIMIT 10', c.id),
+    mensaje_recordatorio: vencidosDe(c.id).length ? mensajeRecordatorio(c, vencidosDe(c.id)) : null,
+    movimientos: mov
+  };
+});
 staff('GET', '/api/clientes/:id', null, ({ params }) => {
   const c = D.get(`${SQL_CLIENTE} WHERE c.id=?`, D.hoy(), params.id);
   if (!c) err(404, 'Cliente no encontrado');
   return { ...c, cxc: D.all('SELECT x.*, v.numero AS venta FROM cxc x LEFT JOIN ventas v ON v.id=x.venta_id WHERE x.cliente_id=? ORDER BY x.id DESC', c.id),
     ventas: D.all("SELECT id,numero,fecha,total_usd,estado FROM ventas WHERE cliente_id=? ORDER BY id DESC LIMIT 30", c.id) };
 });
+// Cédula o RIF en forma única: V-12345678, J-123456789 (con letra) o solo dígitos si no se indicó la letra
+function normalizarDocumento(d) {
+  const t = String(d == null ? '' : d).toUpperCase().replace(/[\s.,]/g, '');
+  if (!t) return null;
+  const m = t.match(/^([VEJGPC])-?(\d[\d-]*)$/);
+  return m ? m[1] + '-' + m[2].replace(/-/g, '') : t.replace(/-/g, '') || null;
+}
+const SQL_DOC = "REPLACE(REPLACE(REPLACE(UPPER(c.documento),'-',''),'.',''),' ','')";
+function clientePorDocumento(doc, excluirId) {
+  const n = normalizarDocumento(doc);
+  if (!n) return null;
+  const solo = n.replace(/-/g, ''), digitos = solo.replace(/^[A-Z]/, ''), conLetra = /^[A-Z]/.test(solo);
+  return D.get('SELECT c.id, c.nombre FROM clientes c WHERE c.documento IS NOT NULL AND c.id<>? AND (' + SQL_DOC + '=? OR ' + SQL_DOC + '=? OR (?=0 AND substr(' + SQL_DOC + ",2)=? AND substr(" + SQL_DOC + ",1,1) GLOB '[A-Z]'))", excluirId || 0, solo, digitos, conLetra ? 1 : 0, digitos) || null;
+}
 function datosCliente(b, perms, previo) {
   const credito = b.credito_habilitado != null ? bool(b.credito_habilitado) : (previo?.credito_habilitado ?? 0);
   const limite = b.limite_usd != null ? num(b.limite_usd, 'Límite inválido', 0) : (previo?.limite_usd ?? 0);
   if ((credito !== (previo?.credito_habilitado ?? 0) || limite !== (previo?.limite_usd ?? 0)) && !perms.has('credito.autorizar')) err(403, 'Solo un supervisor puede habilitar o cambiar el crédito');
   const estado = ['activo', 'suspendido'].includes(b.estado) ? b.estado : (previo?.estado || 'activo');
-  return { nombre: req(b.nombre ?? previo?.nombre, 'Indica el nombre del cliente'), documento: b.documento !== undefined ? s(b.documento) : (previo?.documento ?? null), telefono: b.telefono !== undefined ? D.normalizarTelefono(b.telefono) : (previo?.telefono ?? null),
+  return { nombre: req(b.nombre ?? previo?.nombre, 'Indica el nombre del cliente'), documento: b.documento !== undefined ? normalizarDocumento(b.documento) : (previo?.documento ?? null), telefono: b.telefono !== undefined ? D.normalizarTelefono(b.telefono) : (previo?.telefono ?? null),
     direccion: b.direccion !== undefined ? s(b.direccion) : (previo?.direccion ?? null), credito, limite, dias: b.dias_credito != null ? num(b.dias_credito, 'Días inválidos', 0) : (previo?.dias_credito ?? 7), estado };
 }
 staff('POST', '/api/clientes', 'clientes.editar', ({ body, perms, user }) => {
   const d = datosCliente(body, perms);
   if (d.telefono && D.get('SELECT id FROM clientes WHERE telefono=?', d.telefono)) err(409, 'Ya existe un cliente con ese teléfono');
+  { const dup = d.documento && clientePorDocumento(d.documento); if (dup) err(409, `Ya existe un cliente con ese documento: ${dup.nombre}`); }
   const id = D.insert('INSERT INTO clientes(nombre,documento,telefono,direccion,credito_habilitado,limite_usd,dias_credito,estado,creado) VALUES(?,?,?,?,?,?,?,?,?)',
     d.nombre, d.documento, d.telefono, d.direccion, d.credito, d.limite, d.dias, d.estado, D.ahora());
   L.audit(user.usuario, 'cliente_creado', 'cliente', id, { nombre: d.nombre, credito: d.credito, limite: d.limite });
@@ -636,6 +783,7 @@ staff('PUT', '/api/clientes/:id', 'clientes.editar', ({ params, body, perms, use
   if (!c) err(404, 'Cliente no encontrado');
   const d = datosCliente(body, perms, c);
   if (d.telefono && D.get('SELECT id FROM clientes WHERE telefono=? AND id<>?', d.telefono, c.id)) err(409, 'Ya existe otro cliente con ese teléfono');
+  { const dup = d.documento && d.documento !== c.documento && clientePorDocumento(d.documento, c.id); if (dup) err(409, `Ya existe otro cliente con ese documento: ${dup.nombre}`); }
   D.run('UPDATE clientes SET nombre=?,documento=?,telefono=?,direccion=?,credito_habilitado=?,limite_usd=?,dias_credito=?,estado=? WHERE id=?', d.nombre, d.documento, d.telefono, d.direccion, d.credito, d.limite, d.dias, d.estado, c.id);
   if (d.credito !== c.credito_habilitado || d.limite !== c.limite_usd || d.estado !== c.estado)
     L.audit(user.usuario, 'credito_cliente_modificado', 'cliente', c.id, { antes: [c.credito_habilitado, c.limite_usd, c.estado], despues: [d.credito, d.limite, d.estado] });
@@ -750,13 +898,14 @@ staff('POST', '/api/compras/desde-sugerencias', 'compras.editar', ({ body, user 
 staff('GET', '/api/compras/:id', null, ({ params }) => {
   const c = D.get('SELECT c.*, p.nombre AS proveedor FROM compras c JOIN proveedores p ON p.id=c.proveedor_id WHERE c.id=?', params.id);
   if (!c) err(404, 'Compra no encontrada');
-  return { ...c, items: D.all('SELECT d.*, p.nombre, p.codigo, p.unidad_compra FROM compra_detalles d JOIN productos p ON p.id=d.producto_id WHERE d.compra_id=?', c.id) };
+  return { ...c, items: D.all('SELECT d.*, p.nombre, p.codigo, p.unidad_compra, p.factor FROM compra_detalles d JOIN productos p ON p.id=d.producto_id WHERE d.compra_id=?', c.id) };
 });
 staff('POST', '/api/compras', 'compras.editar', ({ body, user }) => D.tx(() => {
   const id = L.guardarCompra(body, user.usuario);
-  if (body.recibir) L.recibirCompra(id, body, user.usuario);
+  if (body.recibir) L.recibirCompra(id, { ...body, items: undefined }, user.usuario); // compra directa: se recibe tal cual se registró
   return { id };
 }));
+staff('POST', '/api/compras/:id/enviar', 'compras.editar', ({ params, body, user }) => D.tx(() => { L.enviarCompra(Number(params.id), body, user.usuario); return { ok: true }; }));
 staff('POST', '/api/compras/:id/recibir', 'compras.editar', ({ params, body, user }) => D.tx(() => { L.recibirCompra(Number(params.id), body, user.usuario); return { ok: true }; }));
 staff('POST', '/api/compras/:id/anular', 'compras.editar', ({ params, body, user }) => D.tx(() => { L.anularCompra(Number(params.id), body.motivo, user.usuario); return { ok: true }; }));
 
@@ -948,6 +1097,26 @@ const SQL_REPARTO = `SELECT o.id, o.numero AS orden, o.estado, o.repartidor_id, 
     p.numero AS pedido, p.contacto, p.telefono AS tel_contacto, p.zona, p.direccion, p.referencia_entrega, p.nota, c.nombre AS cliente, c.telefono AS tel_cliente,
     COALESCE(NULLIF((SELECT SUM(requerido) FROM preparacion_items i WHERE i.orden_id=o.id), 0), (SELECT SUM(cantidad) FROM pedido_detalles d WHERE d.pedido_id=p.id), 0) AS unidades
     FROM ordenes_entrega o JOIN pedidos p ON p.id=o.pedido_id JOIN clientes c ON c.id=p.cliente_id`;
+// Aviso inmediato: cada app de repartidor mantiene una conexión abierta con el servidor y recibe un evento en cuanto cambia algo
+// (asignación, pedido listo, pedido tomado por otro). Si la conexión se cae, la app sigue consultando cada pocos segundos.
+const canalesReparto = new Map(); // código de empresa → conexiones abiertas
+function avisarReparto(evento, soloUsuarioId) {
+  const lista = canalesReparto.get(D.slugActual());
+  if (!lista) return;
+  const texto = 'data: ' + JSON.stringify(evento) + '\n\n';
+  for (const c of lista) if (!soloUsuarioId || c.userId === soloUsuarioId) { try { c.res.write(texto); } catch { /* conexión cerrada */ } }
+}
+staff('GET', '/api/reparto/eventos', 'reparto.operar', ({ user }) => {
+  const slug = D.slugActual();
+  return { __flujo: (res, req) => {
+    res.write('retry: 3000\n\n: conectado\n\n');
+    const c = { res, userId: user.id };
+    if (!canalesReparto.has(slug)) canalesReparto.set(slug, new Set());
+    canalesReparto.get(slug).add(c);
+    const latido = setInterval(() => { try { res.write(': latido\n\n'); } catch { /* conexión cerrada */ } }, 25000);
+    req.on('close', () => { clearInterval(latido); const l = canalesReparto.get(slug); if (l) { l.delete(c); if (!l.size) canalesReparto.delete(slug); } });
+  } };
+});
 staff('GET', '/api/reparto/mis', 'reparto.operar', ({ user }) => {
   const yo = user.id;
   return {
@@ -970,6 +1139,7 @@ staff('POST', '/api/reparto/ordenes/:id/tomar', 'reparto.operar', ({ params, use
     err(409, o.repartidor_id ? 'Otro repartidor ya tomó este pedido' : 'Este pedido todavía no está listo para enviar');
   }
   L.audit(user.usuario, 'reparto_tomado', 'orden', Number(params.id), user.nombre);
+  avisarReparto({ tipo: 'cambio' });
   return { ok: true };
 }));
 staff('POST', '/api/reparto/ordenes/:id/salir', 'reparto.operar', ({ params, user }) => D.tx(() => {
@@ -981,6 +1151,7 @@ staff('POST', '/api/reparto/ordenes/:id/salir', 'reparto.operar', ({ params, use
   D.run("UPDATE ordenes_entrega SET estado='enviada', repartidor_id=?, repartidor=?, repartidor_tel=?, asignado_en=COALESCE(asignado_en, ?), salida_en=?, actualizado=? WHERE id=?",
     user.id, u.nombre, u.telefono || null, D.ahora(), D.ahora(), D.ahora(), o.id);
   L.audit(user.usuario, 'reparto_en_camino', 'orden', o.id, o.numero);
+  avisarReparto({ tipo: 'cambio' });
   return { ok: true };
 }));
 staff('POST', '/api/reparto/ordenes/:id/entregar', 'reparto.operar', ({ params, body, user }) => D.tx(() => {
@@ -992,6 +1163,7 @@ staff('POST', '/api/reparto/ordenes/:id/entregar', 'reparto.operar', ({ params, 
   D.run("UPDATE ordenes_entrega SET estado='entregada', entregado_en=?, receptor=?, nota_entrega=?, actualizado=? WHERE id=?", D.ahora(), s(body.receptor), s(body.nota), D.ahora(), o.id);
   D.run("UPDATE pedidos SET estado='entregado' WHERE id=?", o.pedido_id);
   L.audit(user.usuario, 'reparto_entregado', 'orden', o.id, { receptor: s(body.receptor) });
+  avisarReparto({ tipo: 'cambio' });
   return { ok: true };
 }));
 staff('GET', '/api/repartidores', 'pedidos.gestionar', () => D.all("SELECT id, nombre, usuario, telefono FROM usuarios WHERE rol='repartidor' AND activo=1 ORDER BY nombre"));
@@ -1003,12 +1175,15 @@ staff('POST', '/api/ordenes/:id/asignar', 'pedidos.gestionar', ({ params, body, 
   if (!body.repartidor_id) {
     D.run('UPDATE ordenes_entrega SET repartidor_id=NULL, repartidor=NULL, repartidor_tel=NULL, asignado_en=NULL WHERE id=?', o.id);
     L.audit(user.usuario, 'reparto_desasignado', 'orden', o.id, o.numero);
+    avisarReparto({ tipo: 'cambio' });
     return { ok: true };
   }
   const rep = D.get("SELECT id, nombre, telefono FROM usuarios WHERE id=? AND rol='repartidor' AND activo=1", body.repartidor_id);
   if (!rep) err(400, 'Selecciona un repartidor activo');
   D.run('UPDATE ordenes_entrega SET repartidor_id=?, repartidor=?, repartidor_tel=?, asignado_en=? WHERE id=?', rep.id, rep.nombre, rep.telefono || null, D.ahora(), o.id);
   L.audit(user.usuario, 'reparto_asignado', 'orden', o.id, { repartidor: rep.nombre });
+  if (o.repartidor_id && o.repartidor_id !== rep.id) avisarReparto({ tipo: 'cambio' }, o.repartidor_id); // el anterior ya no lo tiene
+  avisarReparto({ tipo: 'asignado', orden: o.numero }, rep.id);
   return { ok: true };
 }));
 
@@ -1103,6 +1278,7 @@ staff('POST', '/api/ordenes/:id/estado', 'pedidos.gestionar', ({ params, body, u
   D.run('UPDATE ordenes_entrega SET estado=?, observacion=COALESCE(?,observacion), actualizado=? WHERE id=?', body.estado, s(body.observacion), D.ahora(), o.id);
   if (body.estado === 'entregada') D.run("UPDATE pedidos SET estado='entregado' WHERE id=?", o.pedido_id);
   L.audit(user.usuario, 'orden_estado', 'orden', o.id, body.estado);
+  if (o.tipo === 'envio') avisarReparto({ tipo: 'cambio' });
   return { ok: true };
 }));
 
@@ -1345,7 +1521,8 @@ cli('POST', '/api/app/pedidos/:id/pago', ({ params, body, cliente }) => D.tx(() 
   if (!m) err(400, 'Selecciona una de las formas de pago publicadas');
   const monto = num(body.monto, 'Indica el monto pagado', 0.01);
   let pagaCon = null;
-  if (m.medio === 'efectivo' && body.paga_con != null && body.paga_con !== '') { pagaCon = num(body.paga_con, 'Indica con cuánto vas a pagar', 0.01); if (pagaCon < monto - 0.005) err(400, 'Con lo que vas a pagar no alcanza para el total del pedido'); }
+  if (m.medio === 'efectivo' && (body.paga_con == null || body.paga_con === '')) err(400, 'Indica con qué denominación vas a pagar en efectivo para que preparemos tu vuelto');
+  if (m.medio === 'efectivo') { pagaCon = num(body.paga_con, 'Indica con qué denominación vas a pagar', 0.01); if (pagaCon < monto - 0.005) err(400, 'Con lo que vas a pagar no alcanza para el total del pedido'); }
   const alRecibir = ['efectivo', 'punto'].includes(m.medio); // se paga al retirar o al entregar: sin referencia ni banco emisor
   if (!alRecibir) { req(body.referencia, 'Indica el número de referencia'); req(body.banco_emisor, 'Indica el banco desde el que pagaste'); }
   let comp = body.comprobante ? String(body.comprobante) : null;

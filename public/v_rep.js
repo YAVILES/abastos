@@ -51,7 +51,7 @@
   // ======================= PARÁMETROS =======================
   A.vistas.parametros = async (root, arg) => {
     const tab = arg || 'negocio';
-    const tabs = [['negocio', 'Negocio'], ['operacion', 'Operación'], ['abc', 'Inventario cíclico ABC'], ['cuentas', 'Bancos y cajas'], ['medios', 'Pagos de la app'], ['lector', 'Lector de código de barras'], ['usuarios', 'Usuarios'], ['roles', 'Roles y permisos']];
+    const tabs = [['negocio', 'Negocio'], ['operacion', 'Operación'], ['abc', 'Inventario cíclico ABC'], ['cuentas', 'Bancos y cajas'], ['medios', 'Pagos de la app'], ['tasas', 'Tasas de cambio'], ['lector', 'Lector de código de barras'], ['usuarios', 'Usuarios'], ['roles', 'Roles y permisos']];
     const edit = A.can('parametros.editar');
     root.innerHTML = `<h1>Parámetros</h1><div class="chips" style="margin-bottom:12px">${tabs.map(([k, l]) => ((k === 'usuarios' || k === 'roles') && !A.can('usuarios.editar') ? '' : `<a class="btn ${k === tab ? 'pri' : ''}" href="#/parametros/${k}">${l}</a>`)).join('')}</div><div id="out"></div>`;
     const out = $('#out', root);
@@ -99,9 +99,10 @@
           <div><label>Margen por defecto en productos nuevos (%)</label><input name="margen_defecto" type="number" min="0" step="any" value="${p.margen_defecto}"></div>
           <div><label>Ciclo de compra (cada cuántos días haces pedidos)</label><input name="compra_ciclo_dias" type="number" min="1" max="90" value="${p.compra_ciclo_dias}"></div>
           <div><label>Cobertura máxima a comprar (días de venta)</label><input name="compra_cobertura_max_dias" type="number" min="7" max="365" value="${p.compra_cobertura_max_dias}"></div>
-          <div class="full"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="stock_negativo" ${p.stock_negativo ? 'checked' : ''}> Permitir vender con existencia insuficiente (stock negativo)</label></div></fieldset>
+          <div class="full"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="stock_negativo" ${p.stock_negativo ? 'checked' : ''}> Permitir vender con existencia insuficiente (stock negativo)</label></div>
+          <div class="full"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="venta_requiere_cliente" ${p.venta_requiere_cliente !== false ? 'checked' : ''}> Exigir la cédula o el RIF del cliente en cada venta del punto de venta (si no existe, se crea en el momento)</label></div></fieldset>
           ${edit ? '<div class="full"><button class="btn pri">Guardar</button></div>' : ''}</form>`;
-        $('#f', root).onsubmit = async (ev) => { ev.preventDefault(); const f = ev.target; try { await api.put('/api/parametros/operacion', { reserva_minutos: +f.reserva_minutos.value, reserva_extension_minutos: +f.reserva_extension_minutos.value, descuento_max_pct: +f.descuento_max_pct.value, margen_defecto: +f.margen_defecto.value, stock_negativo: f.stock_negativo.checked, compra_ciclo_dias: +f.compra_ciclo_dias.value, compra_cobertura_max_dias: +f.compra_cobertura_max_dias.value }); A.ok('Guardado'); } catch (er) { A.fail(er); } };
+        $('#f', root).onsubmit = async (ev) => { ev.preventDefault(); const f = ev.target; try { await api.put('/api/parametros/operacion', { reserva_minutos: +f.reserva_minutos.value, reserva_extension_minutos: +f.reserva_extension_minutos.value, descuento_max_pct: +f.descuento_max_pct.value, margen_defecto: +f.margen_defecto.value, stock_negativo: f.stock_negativo.checked, venta_requiere_cliente: f.venta_requiere_cliente.checked, compra_ciclo_dias: +f.compra_ciclo_dias.value, compra_cobertura_max_dias: +f.compra_cobertura_max_dias.value }); A.ok('Guardado'); } catch (er) { A.fail(er); } };
       },
       async abc() {
         const [pr, abc] = await Promise.all([api.get('/api/parametros'), api.get('/api/abc')]);
@@ -222,6 +223,26 @@
             A.ok(ch.checked ? 'Publicado en la app' : 'Ya no se muestra en la app'); P.medios();
           } catch (er) { ch.checked = !ch.checked; A.fail(er); }
         });
+      },
+      async tasas() {
+        const t = await api.get('/api/tasas?limite=90');
+        const eurVes = (x) => Math.round(x.tasa_eur_usd * x.tasa_usd_ves * 100) / 100;
+        const estadoHoy = t.tasa_hoy
+          ? `La tasa de hoy (${e(t.hoy)}) está registrada: Bs ${A.fm(t.tasa_hoy.tasa_usd_ves, 2)} por $.`
+          : `Todavía no hay tasa registrada para hoy (${e(t.hoy)}).${t.ultima ? ' La última es la del ' + e(t.ultima.fecha) + '.' : ''}`;
+        const faltan = t.fechas_sin_tasa.length
+          ? `<div class="check ojo" style="margin-bottom:10px"><span class="pt"></span><div style="flex:1">Fechas sin tasa registrada (días sin operar o sin cargar): ${t.fechas_sin_tasa.slice(-14).map(e).join(', ')}${t.fechas_sin_tasa.length > 14 ? '…' : ''}</div></div>` : '';
+        out.innerHTML = `<div class="card"><div class="topbar"><div><h2 style="margin:0">Tasas de cambio por fecha</h2><p class="muted" style="margin:4px 0 0">Cada fecha tiene su propia tasa. Al abrir el día se registra la de hoy; aquí puedes ver el historial, cargar la de una fecha (por ejemplo mañana) o corregir una con su motivo. Las ventas ya hechas conservan la tasa con la que se registraron.</p></div>${edit ? '<button class="btn pri" data-a="nueva">+ Registrar tasa de una fecha</button>' : ''}</div>
+          <div class="check ${t.tasa_hoy ? 'ok' : 'mal'}" style="margin:10px 0"><span class="pt"></span><div style="flex:1">${estadoHoy}${t.desactualizada ? ' El día operativo abierto es del ' + e(t.jornada_fecha) + '.' : ''}</div></div>
+          ${faltan}
+          ${A.tabla([{ h: 'Fecha', f: (x) => e(x.fecha) + (x.fecha === t.hoy ? ' <span class="tag ok">hoy</span>' : '') }, { h: 'Bs por 1 $', n: 1, f: (x) => A.fm(x.tasa_usd_ves, 4) }, { h: 'Bs por 1 €', n: 1, f: (x) => A.fm(eurVes(x), 4) }, { h: 'Fuente', f: (x) => e(x.fuente || '') },
+            { h: 'Registró', f: (x) => e(x.usuario || '') + (x.actualizada_en ? '<div class="muted" style="font-size:11px">corregida ' + e(x.actualizada_en.slice(0, 16)) + '</div>' : '') }, { h: '', f: (x, i) => (edit ? `<button class="btn sm" data-a="ed" data-i="${i}">Corregir</button>` : '') }], t.lista, { vacio: 'Aún no hay tasas registradas' })}</div>`;
+        const form = (x) => A.form(x ? 'Corregir la tasa del ' + x.fecha : 'Registrar tasa de una fecha', [
+          { n: 'fecha', l: 'Fecha a la que corresponde', t: 'date', req: true, ro: !!x }, { n: 'tasa_usd_ves', l: 'Tasa USD (Bs por 1 $)', t: 'number', req: true }, { n: 'tasa_eur_ves', l: 'Tasa EUR (Bs por 1 €)', t: 'number', req: true },
+          { n: 'fuente', l: 'Fuente' }, { n: 'motivo', l: 'Motivo (obligatorio si la fecha ya tiene tasa o es anterior a hoy)', full: true }],
+          x ? { fecha: x.fecha, tasa_usd_ves: x.tasa_usd_ves, tasa_eur_ves: eurVes(x), fuente: x.fuente } : { fecha: t.hoy, fuente: 'BCV' },
+          async (v) => { const r = await api.post('/api/tasas', v); A.ok(r.actualiza_el_dia_abierto ? 'Tasa registrada y aplicada al día abierto' : 'Tasa registrada'); await A.refrescarEstado(); P.tasas(); });
+        A.acciones(out, { nueva: () => form(null), ed: (el) => form(t.lista[+el.dataset.i]) });
       },
       async roles() {
         const rr = await api.get('/api/roles');

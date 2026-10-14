@@ -36,6 +36,8 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
   await falla(api('GET', '/api/productos', null, ''), 401);
   const cajeroU = await ok(api('POST', '/api/usuarios', { nombre: 'Cajera', usuario: 'cajera', clave: 'cajera123', rol: 'cajero' }));
   const tokCajero = (await ok(api('POST', '/api/login', { usuario: 'cajera', clave: 'cajera123' }))).token;
+  // las pruebas de abajo venden sin cliente; la exigencia de identificarlo (activa por defecto) se prueba en su propio bloque
+  await ok(api('PUT', '/api/parametros/operacion', { venta_requiere_cliente: false }));
   await falla(api('POST', '/api/usuarios', { nombre: 'x', usuario: 'x', clave: '123456', rol: 'admin' }, tokCajero), 403);
 
   paso('sin día abierto no se opera');
@@ -46,6 +48,31 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
   await falla(api('POST', '/api/jornada/tasas', { tasa_usd_ves: 879, tasa_eur_usd: 960, motivo: 'x' }), 400, /no es coherente/); // Bs por euro escritos donde van USD por euro
   await ok(api('POST', '/api/jornada/tasas', { tasa_usd_ves: 40, tasa_eur_ves: 44, motivo: 'euro en bolívares' }));
   assert.equal(Math.round((await ok(api('GET', '/api/jornada'))).jornada.tasa_eur_usd * 1000) / 1000, 1.1, 'EUR/USD derivado de Bs por euro');
+  { // cada tasa pertenece a una fecha
+    const p2 = (n) => String(n).padStart(2, '0'), fmt = (d) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+    const hoy = fmt(new Date()), mañana = fmt(new Date(Date.now() + 864e5)), lejos = fmt(new Date(Date.now() + 20 * 864e5)), ayer = fmt(new Date(Date.now() - 864e5));
+    const reg = await ok(api('GET', '/api/tasas'));
+    assert.equal(reg.tasa_hoy.fecha, hoy, 'abrir el día registra la tasa de hoy');
+    assert.equal(reg.desactualizada, false);
+    await falla(api('POST', '/api/tasas', { tasa_usd_ves: 41, tasa_eur_ves: 45 }), 400, /fecha/);
+    await falla(api('POST', '/api/tasas', { fecha: 'mañana', tasa_usd_ves: 41, tasa_eur_ves: 45 }), 400, /fecha/);
+    await falla(api('POST', '/api/tasas', { fecha: lejos, tasa_usd_ves: 41, tasa_eur_ves: 45 }), 400, /7 días/);
+    await falla(api('POST', '/api/tasas', { fecha: hoy, tasa_usd_ves: 41, tasa_eur_ves: 45 }), 400, /motivo/); // ya tiene tasa
+    await falla(api('POST', '/api/tasas', { fecha: ayer, tasa_usd_ves: 39, tasa_eur_ves: 43 }), 400, /motivo/); // fecha pasada
+    await falla(api('POST', '/api/tasas', { fecha: hoy, tasa_usd_ves: 41, tasa_eur_ves: 45, motivo: 'x' }, tokCajero), 403);
+    // la de mañana solo se guarda en el historial: no cambia la tasa con la que se vende hoy
+    const m = await ok(api('POST', '/api/tasas', { fecha: mañana, tasa_usd_ves: 41, tasa_eur_ves: 45 }));
+    assert.equal(m.actualiza_el_dia_abierto, false);
+    assert.equal((await ok(api('GET', '/api/jornada'))).jornada.tasa_usd_ves, 40);
+    assert.equal((await ok(api('GET', '/api/tasas'))).lista.find((x) => x.fecha === mañana).tasa_usd_ves, 41);
+    // la de hoy sí cambia la tasa del día abierto, con su motivo, y vuelve a la original
+    const h = await ok(api('POST', '/api/tasas', { fecha: hoy, tasa_usd_ves: 40.5, tasa_eur_ves: 44.55, motivo: 'ajuste de mediodía' }));
+    assert.equal(h.actualiza_el_dia_abierto, true);
+    assert.equal((await ok(api('GET', '/api/jornada'))).jornada.tasa_usd_ves, 40.5);
+    await ok(api('POST', '/api/tasas', { fecha: hoy, tasa_usd_ves: 40, tasa_eur_ves: 44, motivo: 'vuelve a la tasa de apertura' }));
+    assert.equal((await ok(api('GET', '/api/jornada'))).jornada.tasa_usd_ves, 40);
+    assert.equal((await ok(api('GET', '/api/tasas'))).tasa_hoy.tasa_usd_ves, 40);
+  }
 
   paso('maestros: proveedor, productos con barras');
   const prov = (await ok(api('POST', '/api/proveedores', { nombre: 'Distribuidora Sur', dias_credito: 15 }))).id;
@@ -220,6 +247,29 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
   let misJuan = await ok(api('GET', '/api/reparto/mis', null, tokJuan));
   assert.equal(misJuan.disponibles.length, 1, 'el pedido listo para envío aparece como disponible para repartir');
   assert.equal(misJuan.disponibles[0].zona, 'Centro'); assert.ok(misJuan.disponibles[0].unidades >= 5);
+  { // aviso inmediato: la asignación llega a la app del repartidor por la conexión abierta, sin esperar la consulta periódica
+    const escuchar = async (tk) => {
+      const ctl = new AbortController(), eventos = [];
+      const r = await fetch(base + '/api/reparto/eventos', { headers: { Authorization: 'Bearer ' + tk }, signal: ctl.signal });
+      assert.equal(r.status, 200); assert.match(r.headers.get('content-type'), /text\/event-stream/);
+      (async () => { const rd = r.body.getReader(), dec = new TextDecoder(); let buf = ''; try { for (;;) { const { value, done } = await rd.read(); if (done) break; buf += dec.decode(value, { stream: true }); let i; while ((i = buf.indexOf('\n\n')) >= 0) { const b = buf.slice(0, i); buf = buf.slice(i + 2); const m = b.match(/^data: (.*)$/m); if (m) eventos.push(JSON.parse(m[1])); } } } catch { /* cerrado */ } })();
+      return { eventos, cerrar: () => ctl.abort() };
+    };
+    assert.equal((await fetch(base + '/api/reparto/eventos', { headers: { Authorization: 'Bearer ' + tokCajero } })).status, 403);
+    assert.equal((await fetch(base + '/api/reparto/eventos')).status, 401);
+    const cJuan = await escuchar(tokJuan), cPedro = await escuchar(tokPedro);
+    const espera = (ms) => new Promise((r) => setTimeout(r, ms));
+    const repJuan = (await ok(api('GET', '/api/repartidores'))).find((x) => x.usuario === 'juan');
+    await ok(api('POST', `/api/ordenes/${oid}/asignar`, { repartidor_id: repJuan.id }));
+    await espera(400);
+    assert.ok(cJuan.eventos.some((x) => x.tipo === 'asignado' && x.orden), 'Juan se entera al instante de que le asignaron el pedido');
+    assert.ok(!cPedro.eventos.some((x) => x.tipo === 'asignado'), 'Pedro no recibe el aviso de una asignación ajena');
+    assert.equal((await ok(api('GET', '/api/reparto/mis', null, tokJuan))).asignados.length, 1, 'y el pedido ya aparece en su lista');
+    await ok(api('POST', `/api/ordenes/${oid}/asignar`, { repartidor_id: null })); // se devuelve a la bolsa común
+    await espera(400);
+    assert.ok(cPedro.eventos.some((x) => x.tipo === 'cambio'), 'todos se enteran de que el pedido volvió a estar disponible');
+    cJuan.cerrar(); cPedro.cerrar();
+  }
   await falla(api('POST', `/api/reparto/ordenes/${oid}/entregar`, {}, tokJuan), 409, /Primero marca/);
   await ok(api('POST', `/api/reparto/ordenes/${oid}/tomar`, {}, tokJuan));
   await falla(api('POST', `/api/reparto/ordenes/${oid}/tomar`, {}, tokPedro), 409, /Otro repartidor/);
@@ -275,6 +325,8 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
     const ct2 = (await ok(api('POST', '/api/app/login', { telefono: '04245556677', pin: '1234' }, ''))).token;
     const pd = await ok(api('POST', '/api/app/pedidos', { items: [{ producto_id: p1, cantidad: 1 }], entrega: 'retiro' }, ct2));
     await falla(api('POST', `/api/app/pedidos/${pd.id}/pago`, { medio_app_id: oculto.id, monto: 1.3 }, ct2), 400, /publicadas/);
+    await falla(api('POST', `/api/app/pedidos/${pd.id}/pago`, { medio_app_id: efe.id, monto: 1.3 }, ct2), 400, /denominación/); // en efectivo es obligatorio decir con cuánto paga
+    await falla(api('POST', `/api/app/pedidos/${pd.id}/pago`, { medio_app_id: efe.id, monto: 1.3, paga_con: '' }, ct2), 400, /denominación/);
     await falla(api('POST', `/api/app/pedidos/${pd.id}/pago`, { medio_app_id: efe.id, monto: 1.3, paga_con: 1 }, ct2), 400, /no alcanza/);
     await ok(api('POST', `/api/app/pedidos/${pd.id}/pago`, { medio_app_id: efe.id, monto: 1.3, paga_con: 5 }, ct2)); // sin referencia ni banco; paga con un billete de $5
     const dp = await ok(api('GET', '/api/app/pedidos/' + pd.id, null, ct2));
@@ -384,6 +436,179 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
     assert.equal((await ok(api('GET', '/api/parametros'))).empresa.logo, 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==');
     await ok(api('PUT', '/api/parametros/empresa', { logo: '' }));
     assert.equal((await ok(api('GET', '/api/app/config', null, ''))).empresa.logo, '');
+  }
+
+  paso('orden de compra: se envía al proveedor y al recibir se ajustan cantidades y costos');
+  {
+    const catsOC = await ok(api('GET', '/api/categorias'));
+    const nuevoProd = async (nombre, codigo) => (await ok(api('POST', '/api/productos', { nombre, categoria_id: catsOC[0].id, codigos: [codigo], costo_usd: 0, precio_usd: 9, factor: 1, proveedor_id: prov }))).id;
+    const pA = await nuevoProd('Producto orden A', '7590000008881'), pB = await nuevoProd('Producto orden B', '7590000008882');
+    const orden = async () => (await ok(api('POST', '/api/compras', { proveedor_id: prov, moneda: 'USD', condicion: 'contado', medio: 'efectivo', items: [{ producto_id: pA, cantidad: 10, costo_unit: 1 }, { producto_id: pB, cantidad: 5, costo_unit: 2 }] }))).id;
+    const stock = async (id) => (await ok(api('GET', '/api/productos/' + id))).stock;
+    const id = await orden();
+    let c = await ok(api('GET', '/api/compras/' + id));
+    assert.equal(c.estado, 'borrador'); assert.equal(c.total_moneda, 20); assert.equal(c.total_pedido, 20);
+    // enviada al proveedor: queda el hecho registrado y el estado
+    await falla(api('POST', `/api/compras/${id}/enviar`, { medio_envio: 'whatsapp' }, tokCajero), 403);
+    await ok(api('POST', `/api/compras/${id}/enviar`, { medio_envio: 'whatsapp', nota: 'Se la mandé a Pedro por WhatsApp' }));
+    c = await ok(api('GET', '/api/compras/' + id));
+    assert.equal(c.estado, 'enviada'); assert.ok(c.enviada_en); assert.equal(c.enviada_por, 'admin'); assert.equal(c.envio_medio, 'whatsapp'); assert.match(c.envio_nota, /Pedro/);
+    await falla(api('POST', `/api/compras/${id}/enviar`, {}), 409, /ya fue enviada/);
+    assert.equal(await stock(pA), 0, 'una orden enviada todavía no mueve el inventario');
+    // la recepción no tiene que coincidir con lo pedido
+    const [dA, dB] = c.items;
+    await falla(api('POST', `/api/compras/${id}/recibir`, { items: [{ detalle_id: dA.id, cantidad: 0 }, { detalle_id: dB.id, cantidad: 0 }] }), 400, /al menos un producto/);
+    await falla(api('POST', `/api/compras/${id}/recibir`, { items: [{ detalle_id: dA.id, cantidad: -1 }] }), 400, /inválido/);
+    await falla(api('POST', `/api/compras/${id}/recibir`, { items: [{ detalle_id: 999999, cantidad: 1 }] }), 400, /no pertenece/);
+    await ok(api('POST', `/api/compras/${id}/recibir`, { items: [{ detalle_id: dA.id, cantidad: 8, costo_unit: 1.1 }, { detalle_id: dB.id, cantidad: 0 }], factura: 'F-00123', factura_fecha: '2026-10-14', recepcion_nota: 'Faltaron 2 de A y nada de B', condicion: 'contado', medio: 'efectivo' }));
+    c = await ok(api('GET', '/api/compras/' + id));
+    assert.equal(c.estado, 'recibida'); assert.equal(c.con_diferencias, 1); assert.equal(c.factura, 'F-00123'); assert.equal(c.recibida_por, 'admin');
+    assert.equal(c.total_pedido, 20, 'se conserva el total pedido'); assert.equal(c.total_moneda, 8.8); assert.equal(c.total_usd, 8.8);
+    assert.equal(c.enviada_por, 'admin', 'y se conserva el registro del envío');
+    const a = c.items.find((x) => x.producto_id === pA), b = c.items.find((x) => x.producto_id === pB);
+    assert.equal(a.cantidad_pedida, 10); assert.equal(a.cantidad, 8); assert.equal(a.costo_pedido, 1); assert.equal(a.costo_unit, 1.1);
+    assert.equal(b.cantidad_pedida, 5); assert.equal(b.cantidad, 0);
+    assert.equal(await stock(pA), 8, 'entra al inventario lo que llegó'); assert.equal(await stock(pB), 0);
+    assert.equal(Math.round((await ok(api('GET', '/api/productos/' + pA))).costo_usd * 1e4) / 1e4, 1.1, 'el costo sale de la factura');
+    // una orden recibida tal cual se pidió no queda marcada con diferencias
+    const id2 = await orden(); await ok(api('POST', `/api/compras/${id2}/enviar`, {}));
+    await ok(api('POST', `/api/compras/${id2}/recibir`, { condicion: 'contado', medio: 'efectivo' }));
+    c = await ok(api('GET', '/api/compras/' + id2));
+    assert.equal(c.con_diferencias, 0); assert.equal(c.total_moneda, 20);
+    assert.equal(await stock(pA), 18);
+    // anular una recepción parcial solo revierte lo que entró
+    await ok(api('POST', `/api/compras/${id}/anular`, { motivo: 'prueba de recepción parcial' }));
+    assert.equal(await stock(pA), 10); assert.equal(await stock(pB), 5);
+    await ok(api('POST', `/api/compras/${id2}/anular`, { motivo: 'prueba de recepción' }));
+    // una orden enviada también se puede anular (el proveedor no la surtió)
+    const id3 = await orden(); await ok(api('POST', `/api/compras/${id3}/enviar`, {}));
+    await ok(api('POST', `/api/compras/${id3}/anular`, { motivo: 'el proveedor no tenía existencia' }));
+    assert.equal((await ok(api('GET', '/api/compras/' + id3))).estado, 'anulada');
+    await falla(api('POST', `/api/compras/${id3}/recibir`, {}), 409, /pendientes/);
+  }
+
+  paso('kardex valorizado al costo promedio móvil');
+  {
+    const cats2 = await ok(api('GET', '/api/categorias'));
+    const k = (await ok(api('POST', '/api/productos', { nombre: 'Producto de kardex', categoria_id: cats2[0].id, codigos: ['7590000009991'], costo_usd: 0, precio_usd: 5, factor: 1, proveedor_id: prov }))).id;
+    const comprar = (cant, costo) => ok(api('POST', '/api/compras', { proveedor_id: prov, moneda: 'USD', condicion: 'contado', medio: 'efectivo', recibir: true, items: [{ producto_id: k, cantidad: cant, costo_unit: costo }] }));
+    const kardex = async () => ok(api('GET', `/api/productos/${k}/kardex`));
+    const aprox = (a, b, msg) => assert.ok(Math.abs(a - b) < 0.00011, `${msg}: ${a} ≠ ${b}`);
+    const c1 = await comprar(10, 1); aprox((await kardex()).costo_promedio, 1, 'primera compra');
+    await comprar(10, 2);
+    let r = await kardex();
+    aprox(r.costo_promedio, 1.5, 'promedio de 10 a $1 y 10 a $2'); assert.equal(r.existencia, 20); aprox(r.valor_usd, 30, 'valor del inventario');
+    // el consumo sale al promedio vigente y queda en el detalle de la venta
+    const venta = await ok(api('POST', '/api/ventas', { items: [{ producto_id: k, cantidad: 4 }], pagos: [{ medio: 'efectivo', moneda: 'USD', monto: 20 }] }));
+    r = await kardex();
+    aprox(r.movimientos[0].costo_usd, 1.5, 'la venta se valora al promedio'); aprox(r.movimientos[0].valor_usd, -6, 'valor de la salida'); aprox(r.movimientos[0].saldo_valor, 24, 'saldo en valor');
+    aprox(r.costo_promedio, 1.5, 'vender no cambia el promedio');
+    aprox((await ok(api('GET', '/api/ventas/' + venta.id))).items.find((x) => x.producto_id === k).costo_usd, 1.5, 'costo guardado en la venta');
+    // una compra nueva a otro precio mueve el promedio: (16 × 1,5 + 4 × 3) / 20 = 1,8
+    const c3 = await comprar(4, 3);
+    aprox((await kardex()).costo_promedio, 1.8, 'promedio tras la tercera compra');
+    // mermas y ajustes entran o salen al promedio del momento y no lo cambian
+    await ok(api('POST', '/api/inventario/ajuste', { producto_id: k, tipo: 'merma', cantidad: -2, motivo: 'vencido' }));
+    await ok(api('POST', '/api/inventario/ajuste', { producto_id: k, tipo: 'ajuste', cantidad: 3, motivo: 'sobrante' }));
+    r = await kardex();
+    aprox(r.movimientos[1].costo_usd, 1.8, 'la merma sale al promedio'); aprox(r.movimientos[0].costo_usd, 1.8, 'el ajuste entra al promedio');
+    aprox(r.costo_promedio, 1.8, 'ajustes y mermas no mueven el promedio'); assert.equal(r.existencia, 21); aprox(r.valor_usd, 37.8, 'valor tras ajustes');
+    // cambiar el costo a mano queda como revalorización: el saldo pasa a valer al costo nuevo
+    await ok(api('PUT', '/api/productos/' + k, { costo_usd: 2 }));
+    r = await kardex();
+    assert.equal(r.movimientos[0].tipo, 'revalorizacion'); aprox(r.costo_promedio, 2, 'costo nuevo'); aprox(r.valor_usd, 42, 'valor al costo nuevo');
+    // anular la compra de $3 quita esas 4 unidades a su costo y recalcula: (42 − 12) / 17
+    await ok(api('POST', `/api/compras/${c3.id}/anular`, { motivo: 'prueba de kardex' }));
+    r = await kardex();
+    aprox(r.movimientos[0].costo_usd, 3, 'el reverso de la compra sale a su costo'); aprox(r.costo_promedio, 30 / 17, 'promedio tras anular la compra'); assert.equal(r.existencia, 17);
+    assert.equal((await ok(api('GET', '/api/productos/' + k))).costo_usd, Math.round(30 / 17 * 1e4) / 1e4, 'el costo del producto sigue al promedio');
+    // anular la venta devuelve las 4 unidades al costo con el que salieron: (30 + 6) / 21
+    await ok(api('POST', `/api/ventas/${venta.id}/anular`, { motivo: 'prueba de kardex' }));
+    r = await kardex();
+    aprox(r.movimientos[0].costo_usd, 1.5, 'la devolución entra al costo de la venta'); aprox(r.costo_promedio, 36 / 21, 'promedio tras la devolución'); assert.equal(r.existencia, 21);
+    // la existencia del kardex siempre coincide con la suma de los movimientos
+    aprox(r.existencia, r.movimientos.reduce((a, m) => a + m.cantidad, 0), 'existencia = suma de movimientos');
+    assert.ok(c1.id);
+  }
+
+  paso('estado de cuenta del cliente: facturas a crédito, cobros e historial con saldo');
+  {
+    await falla(api('GET', '/api/clientes/999999/estado-cuenta'), 404);
+    const cid = (await ok(api('POST', '/api/clientes', { nombre: 'Cliente con historial', documento: 'V-8123456', telefono: '04125550101', credito_habilitado: true, limite_usd: 100, dias_credito: 7 }))).id;
+    const vacio = await ok(api('GET', `/api/clientes/${cid}/estado-cuenta`));
+    assert.equal(vacio.resumen.deuda_usd, 0); assert.deepEqual(vacio.movimientos, []); assert.equal(vacio.cliente.credito_habilitado, 1);
+    const v1 = await ok(api('POST', '/api/ventas', { cliente_id: cid, items: [{ producto_id: p1, cantidad: 5 }], pagos: [{ medio: 'credito' }] }));
+    const v2 = await ok(api('POST', '/api/ventas', { cliente_id: cid, items: [{ producto_id: p1, cantidad: 3 }], pagos: [{ medio: 'efectivo', moneda: 'USD', monto: 1 }, { medio: 'credito' }] }));
+    const cxcs = await ok(api('GET', '/api/cxc?cliente_id=' + cid));
+    const x1 = cxcs.find((x) => x.venta === v1.numero);
+    await ok(api('POST', `/api/cxc/${x1.id}/cobrar`, { pagos: [{ medio: 'efectivo', moneda: 'USD', monto: 2 }] }));
+    await ok(api('POST', '/api/ventas', { cliente_id: cid, items: [{ producto_id: p1, cantidad: 1 }], pagos: [{ medio: 'efectivo', moneda: 'USD', monto: 5 }] })); // de contado
+    await ok(api('POST', `/api/ventas/${v2.id}/anular`, { motivo: 'prueba de estado de cuenta' }));
+    const ec = await ok(api('GET', `/api/clientes/${cid}/estado-cuenta`));
+    const esperada = Math.round((v1.credito_usd - 2) * 100) / 100;
+    assert.equal(ec.resumen.deuda_usd, esperada, 'la deuda es lo facturado a crédito menos lo cobrado, sin la venta anulada');
+    assert.equal(ec.resumen.cobrado_usd, 2); assert.equal(ec.resumen.facturas_abiertas, 1);
+    assert.equal(ec.resumen.credito_disponible_usd, Math.round((100 - esperada) * 100) / 100);
+    assert.deepEqual(ec.facturas.map((x) => x.estado).sort(), ['abonada', 'anulada']);
+    assert.equal(ec.facturas.find((x) => x.venta === v1.numero).cobros.length, 1);
+    assert.deepEqual(ec.movimientos.map((m) => m.tipo).sort(), ['cargo', 'cargo', 'cobro', 'contado', 'reverso']);
+    const ultimo = ec.movimientos.filter((m) => m.tipo !== 'contado').slice(-1)[0];
+    assert.equal(ultimo.saldo, esperada, 'el saldo corriente del último movimiento es la deuda actual');
+    const cargo2 = ec.movimientos.find((m) => m.tipo === 'cargo' && m.doc === v2.numero);
+    assert.match(cargo2.detalle, /otra parte se pagó al momento/);
+    assert.equal(ec.movimientos.find((m) => m.tipo === 'contado').monto_info > 0, true);
+    assert.equal((await ok(api('GET', `/api/clientes/${cid}/estado-cuenta`, null, tokCajero))).resumen.deuda_usd, esperada, 'el cajero también puede consultarlo');
+    // recordatorios de saldos vencidos: solo salen los clientes con facturas vencidas
+    assert.equal(ec.mensaje_recordatorio, null); assert.deepEqual(ec.recordatorios, []);
+    assert.ok(!(await ok(api('GET', '/api/cxc/vencidos'))).clientes.some((c) => c.id === cid));
+    await falla(api('POST', `/api/clientes/${cid}/recordatorio`, { mensaje: 'Hola' }), 409, /no tiene saldos vencidos/);
+    D.conEmpresa('principal', () => D.run('UPDATE cxc SET vence=? WHERE id=?', D.sumarDias(-12), x1.id)); // la factura abierta venció hace 12 días
+    const venc = await ok(api('GET', '/api/cxc/vencidos'));
+    const fila = venc.clientes.find((c) => c.id === cid);
+    assert.equal(fila.vencido_usd, esperada); assert.equal(fila.dias_max, 12); assert.equal(fila.facturas, 1); assert.equal(fila.ultimo_recordatorio, null);
+    assert.match(fila.mensaje, /Cliente con historial/); assert.match(fila.mensaje, new RegExp(v1.numero)); assert.match(fila.mensaje, /vencida/);
+    assert.ok(venc.total_vencido_usd >= esperada);
+    await ok(api('POST', '/api/usuarios', { nombre: 'Vendedor Prueba', usuario: 'vend1', clave: 'vendedor123', rol: 'vendedor' }));
+    const tokVendedor = (await ok(api('POST', '/api/login', { usuario: 'vend1', clave: 'vendedor123' }, ''))).token;
+    await falla(api('POST', `/api/clientes/${cid}/recordatorio`, { mensaje: fila.mensaje }, tokVendedor), 403);
+    await falla(api('POST', `/api/clientes/${cid}/recordatorio`, { mensaje: '  ' }), 400, /vacío/);
+    await ok(api('POST', `/api/clientes/${cid}/recordatorio`, { mensaje: fila.mensaje, medio: 'whatsapp' }, tokCajero));
+    const ec2 = await ok(api('GET', `/api/clientes/${cid}/estado-cuenta`));
+    assert.equal(ec2.recordatorios.length, 1); assert.equal(ec2.recordatorios[0].usuario, 'cajera'); assert.equal(ec2.recordatorios[0].monto_usd, esperada); assert.equal(ec2.facturas.find((x) => x.venta === v1.numero).dias_vencida, 12);
+    assert.ok(ec2.mensaje_recordatorio);
+    assert.ok((await ok(api('GET', '/api/cxc/vencidos'))).clientes.find((c) => c.id === cid).ultimo_recordatorio, 'queda registrado cuándo se le recordó');
+  }
+
+  paso('toda venta del POS exige identificar al cliente por cédula o RIF');
+  {
+    await ok(api('PUT', '/api/parametros/operacion', { venta_requiere_cliente: true }));
+    const venta = (cid) => api('POST', '/api/ventas', { cliente_id: cid, items: [{ producto_id: p1, cantidad: 1 }], pagos: [{ medio: 'efectivo', moneda: 'USD', monto: 5 }] });
+    await falla(venta(null), 400, /Identifica al cliente/);
+    // búsqueda por documento: con o sin letra, con o sin guiones o puntos
+    const sin = await ok(api('GET', '/api/clientes/por-documento?doc=V-17.234.567', null, tokCajero));
+    assert.equal(sin.cliente, null); assert.equal(sin.documento, 'V-17234567');
+    await falla(api('GET', '/api/clientes/por-documento?doc=12', null, tokCajero), 400, /completo/);
+    const nuevo = await ok(api('POST', '/api/clientes', { nombre: 'Ana Documento', documento: 'v 17.234.567', telefono: '04121234567' }, tokCajero));
+    for (const d of ['V-17234567', 'v17234567', '17234567', 'V-17.234.567']) {
+      const r = await ok(api('GET', '/api/clientes/por-documento?doc=' + encodeURIComponent(d), null, tokCajero));
+      assert.equal(r.cliente && r.cliente.id, nuevo.id, 'encuentra ' + d);
+    }
+    assert.equal((await ok(api('GET', '/api/clientes/por-documento?doc=E-17234567', null, tokCajero))).cliente, null, 'otra letra es otra persona');
+    await falla(api('POST', '/api/clientes', { nombre: 'Repetida', documento: 'V-17234567' }, tokCajero), 409, /documento/);
+    const v = await ok(venta(nuevo.id));
+    assert.ok(v.numero);
+    await ok(api('POST', `/api/ventas/${v.id}/anular`, { motivo: 'prueba de identificación' }));
+    // un cliente que no tiene cédula o RIF no sirve para vender: primero hay que completarla
+    const sinDoc = await ok(api('POST', '/api/clientes', { nombre: 'Sin Cédula', telefono: '04129998877' }, tokCajero));
+    await falla(venta(sinDoc.id), 400, /Falta la cédula/);
+    await ok(api('PUT', '/api/clientes/' + sinDoc.id, { documento: 'J-301234567' }, tokCajero));
+    await falla(api('PUT', '/api/clientes/' + sinDoc.id, { documento: 'V-17234567' }, tokCajero), 409, /documento/);
+    const v2 = await ok(venta(sinDoc.id));
+    await ok(api('POST', `/api/ventas/${v2.id}/anular`, { motivo: 'prueba de identificación' }));
+    // el administrador puede desactivar la exigencia
+    await ok(api('PUT', '/api/parametros/operacion', { venta_requiere_cliente: false }));
+    const v3 = await ok(venta(null));
+    await ok(api('POST', `/api/ventas/${v3.id}/anular`, { motivo: 'prueba de identificación' }));
   }
 
   paso('roles y permisos por módulo, editables por el administrador');

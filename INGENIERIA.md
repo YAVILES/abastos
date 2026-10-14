@@ -27,7 +27,7 @@ Este documento resume lo que hace falta para ponerlo en internet. La guía paso 
 | Sesión y contraseñas | Token de sesión guardado en la base de cada empresa (formato `<codigo>.<hex>`); contraseñas con `scrypt` y sal |
 | Contexto multiempresa | `AsyncLocalStorage`: cada petición abre la base de su empresa |
 | Contenedor y despliegue | `Dockerfile` sobre `node:22-slim` y `fly.toml` para Fly.io (puerto interno 8080) |
-| Pruebas | `npm test`: plan de conteos más 29 bloques de humo sobre una base temporal; `test/simulador.js` genera datos y audita la consistencia |
+| Pruebas | `npm test`: plan de conteos más 33 bloques de humo sobre una base temporal; `test/simulador.js` genera datos y audita la consistencia |
 
 ### Decisiones que conviene conocer
 
@@ -64,7 +64,7 @@ Ver `.env.example` (el servidor no lee archivos `.env`: las variables se definen
 ## Pruebas
 
 ```bash
-npm test      # plan de conteos + 29 bloques de humo (API completa sobre una base temporal)
+npm test      # plan de conteos + 33 bloques de humo (API completa sobre una base temporal)
 npm run demo  # carga la empresa demo con datos de ejemplo
 ```
 

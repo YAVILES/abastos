@@ -193,7 +193,9 @@ async function jornada(n, esUltima, dejarAbierto) {
       if (cant >= 1) items.push({ producto_id: p.id, cantidad: cant, precio: p.precio_usd });
     }
     if (!items.length) continue;
-    const cliente = rand() < 0.35 ? elegir(clientes.filter((c) => c.estado === 'activo')) : null;
+    // toda venta del POS lleva cliente identificado por documento; la mayoría son de contado
+    const conDoc = clientes.filter((c) => c.estado === 'activo' && c.documento && !/Compradora App/.test(c.nombre)), contado = conDoc.filter((c) => !c.credito_habilitado);
+    const cliente = rand() < 0.35 ? elegir(conDoc) : elegir(contado.length ? contado : conDoc);
     const pct = rand() < 0.1 ? 5 : 0;
     const total = totalLocal(items, pct);
     let pagos = pagosPara(total, cliente);
@@ -365,6 +367,7 @@ async function sondasMidJornada(inv) {
   await sonda('Pago incompleto', 400, 'POST', '/api/ventas', { items: [{ producto_id: p.id, cantidad: 1 }], pagos: efUSD(0.01) }, tkC);
   await sonda('Pago móvil sin referencia', 400, 'POST', '/api/ventas', { items: [{ producto_id: p.id, cantidad: 1 }], pagos: [{ medio: 'pago_movil', moneda: 'VES', monto: 99999 }] }, tkC);
   await sonda('Crédito sin cliente identificado', 400, 'POST', '/api/ventas', { items: [{ producto_id: p.id, cantidad: 1 }], pagos: [{ medio: 'credito' }] }, tkC);
+  await sonda('Venta de contado sin identificar al cliente', 400, 'POST', '/api/ventas', { items: [{ producto_id: p.id, cantidad: 1 }], pagos: efUSD(Math.ceil(p.precio_usd) + 1) }, tkC);
   const necesario = cli.limite_usd + 60;
   const grande = [...inv.values()].find((x) => x.activo && x.precio_usd > 0 && x.disponible * x.precio_usd >= necesario);
   if (grande) await sonda('Crédito por encima del límite (cajero)', 409, 'POST', '/api/ventas', { cliente_id: cli.id, items: [{ producto_id: grande.id, cantidad: Math.ceil(necesario / grande.precio_usd) }], pagos: [{ medio: 'credito' }] }, tkC);
@@ -382,7 +385,7 @@ async function sondasMidJornada(inv) {
   const nuevo = await op('producto de sonda', 'POST', '/api/productos', { nombre: 'Producto sonda ' + Date.now(), precio_usd: 2, costo_usd: 1, codigos: ['7599' + entre(100000, 999999)], proveedor_id: proveedores[0].id }, tkA);
   if (nuevo) {
     const cmp = await op('compra sonda', 'POST', '/api/compras', { proveedor_id: proveedores[0].id, moneda: 'USD', condicion: 'contado', medio: 'efectivo', recibir: true, items: [{ producto_id: nuevo.id, cantidad: 1, costo_unit: 1 }] }, tkA);
-    await op('venta sonda', 'POST', '/api/ventas', { items: [{ producto_id: nuevo.id, cantidad: 1 }], pagos: efUSD(2) }, tkC);
+    await op('venta sonda', 'POST', '/api/ventas', { cliente_id: cli.id, items: [{ producto_id: nuevo.id, cantidad: 1 }], pagos: efUSD(2) }, tkC);
     if (cmp) await sonda('Anular una compra cuya mercancía ya se vendió', 409, 'POST', `/api/compras/${cmp.id}/anular`, { motivo: 'prueba' }, tkA);
     await op('desactivar producto sonda', 'PUT', '/api/productos/' + nuevo.id, { nombre: 'Producto sonda inactivo', activo: false }, tkA);
     await sonda('Vender un producto inactivo', 400, 'POST', '/api/ventas', { items: [{ producto_id: nuevo.id, cantidad: 1 }], pagos: efUSD(2) }, tkC);
@@ -425,6 +428,20 @@ function auditar() {
   }
   ctl('Inventario', 'Existencia del kardex = compras − ventas ± ajustes', f1);
   ctl('Inventario', 'Sin existencias negativas', q('SELECT p.nombre, SUM(m.cantidad) AS s FROM productos p JOIN inventario_movimientos m ON m.producto_id=p.id GROUP BY p.id HAVING s < -0.0001'));
+  // Kardex valorizado al costo promedio móvil
+  ctl('Inventario', 'Kardex: el saldo del último movimiento = existencia, y el costo promedio = costo del producto', q(`SELECT p.nombre FROM productos p WHERE EXISTS (SELECT 1 FROM inventario_movimientos m WHERE m.producto_id=p.id)
+      AND (ABS((SELECT saldo_cant FROM inventario_movimientos m WHERE m.producto_id=p.id ORDER BY m.id DESC LIMIT 1) - (SELECT SUM(cantidad) FROM inventario_movimientos m WHERE m.producto_id=p.id)) > 0.0001
+        OR ABS((SELECT costo_prom FROM inventario_movimientos m WHERE m.producto_id=p.id ORDER BY m.id DESC LIMIT 1) - p.costo_usd) > 0.0001)`));
+  ctl('Inventario', 'Kardex: todo consumo (venta, merma, consumo interno, ajuste, diferencia de conteo) se valora al costo promedio vigente', q(`SELECT m.id, m.tipo, m.costo_usd, a.costo_prom AS promedio_anterior FROM inventario_movimientos m
+      JOIN inventario_movimientos a ON a.id=(SELECT MAX(x.id) FROM inventario_movimientos x WHERE x.producto_id=m.producto_id AND x.id<m.id)
+      WHERE m.cantidad<0 AND m.tipo IN ('venta','merma','consumo_interno','ajuste','ajuste_conteo') AND ABS(m.costo_usd - a.costo_prom) > 0.00005`));
+  ctl('Inventario', 'Kardex: el ajuste de inventario se registra al promedio del momento, no al costo de otra fecha', q(`SELECT m.id, m.tipo, m.costo_usd FROM inventario_movimientos m
+      JOIN inventario_movimientos a ON a.id=(SELECT MAX(x.id) FROM inventario_movimientos x WHERE x.producto_id=m.producto_id AND x.id<m.id)
+      WHERE m.cantidad>0 AND m.tipo IN ('ajuste','ajuste_conteo') AND ABS(m.costo_usd - a.costo_prom) > 0.00005`));
+  ctl('Inventario', 'La venta guarda el mismo costo que el kardex', q(`SELECT v.numero, d.producto_id FROM venta_detalles d JOIN ventas v ON v.id=d.venta_id
+      JOIN inventario_movimientos m ON m.ref_tipo='venta' AND m.ref_id=v.id AND m.producto_id=d.producto_id AND m.tipo='venta' WHERE ABS(d.costo_usd - m.costo_usd) > 0.00005`));
+  ctl('Inventario', 'Kardex: el valor del saldo = existencia × costo promedio', q(`SELECT m.id, m.saldo_cant, m.costo_prom, m.saldo_valor FROM inventario_movimientos m
+      WHERE m.saldo_cant>0 AND ABS(m.saldo_valor - m.saldo_cant*m.costo_prom) > MAX(0.02, m.saldo_cant*0.00006)`));
   ctl('Inventario', 'Ventas anuladas devuelven todo al inventario', q(`SELECT v.numero, COALESCE(SUM(m.cantidad),0) AS neto FROM ventas v JOIN inventario_movimientos m ON m.ref_tipo='venta' AND m.ref_id=v.id
       WHERE v.estado='anulada' GROUP BY v.id HAVING ABS(neto) > 0.0001`));
   ctl('Inventario', 'Cada ajuste por conteo coincide con la diferencia contada', q(`SELECT i.id, i.diferencia, (SELECT COALESCE(SUM(m.cantidad),0) FROM inventario_movimientos m WHERE m.tipo='ajuste_conteo' AND m.ref_id=i.conteo_id AND m.producto_id=i.producto_id) AS mov

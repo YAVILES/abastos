@@ -163,9 +163,13 @@
     const rows = await api('GET', '/api/app/pedidos');
     marco('Mis pedidos', rows.length ? rows.map((p) => `<a href="#/pedido/${p.id}" style="text-decoration:none;color:inherit"><div class="card"><div class="row" style="justify-content:space-between"><b>${e(p.numero)}</b><b>${usdFmt(p.total_usd)}</b></div><div class="muted" style="margin:4px 0 8px">${e(p.creado.slice(0, 16))}</div>${luz(p.semaforo)}</div></a>`).join('') : '<div class="card empty">Aún no has hecho pedidos.</div>', { atras: () => (location.hash = '#/catalogo') });
   }
+  // Cada pedido se actualiza solo mientras está en pantalla. Al mostrar otro, o al volver a dibujar, se apagan los temporizadores del anterior.
+  const enPantalla = (id) => ruta().v === 'pedido' && String(ruta().a) === String(id);
   async function vistaPedido(id) {
+    clearInterval(timer); clearInterval(cdTimer);
     const p = await api('GET', '/api/app/pedidos/' + id);
     if (!medios.length) medios = await api('GET', '/api/app/medios-pago');
+    if (!enPantalla(id)) return; // mientras se pedían los datos, la persona pasó a otro pedido
     const puedePagar = ['pendiente', 'pago_reportado'].includes(p.estado);
     const pendiente = p.pagos.find((x) => x.estado === 'pendiente');
     marco('Pedido ' + p.numero, `${luz(p.semaforo)}
@@ -185,7 +189,7 @@
     }
     const c = $('#canc'); if (c) c.onclick = async () => { try { await api('POST', `/api/app/pedidos/${id}/cancelar`); toast('Pedido cancelado'); location.hash = '#/pedidos'; } catch (er) { falla(er); } };
     if (puedePagar && !pendiente) conectarPago(p);
-    timer = setInterval(async () => { if (ruta().v !== 'pedido') return clearInterval(timer); try { const n = await api('GET', '/api/app/pedidos/' + id); if (n.estado !== p.estado || n.semaforo.paso !== p.semaforo.paso || (n.pagos.length !== p.pagos.length)) vistaPedido(id); } catch {} }, 12000);
+    const miTimer = timer = setInterval(async () => { if (!enPantalla(id)) return clearInterval(miTimer); try { const n = await api('GET', '/api/app/pedidos/' + id); if (!enPantalla(id)) return; if (n.estado !== p.estado || n.semaforo.paso !== p.semaforo.paso || (n.pagos.length !== p.pagos.length)) vistaPedido(id); } catch {} }, 12000);
   }
   const BANCOS = ['Banco de Venezuela', 'Banesco', 'Mercantil', 'Provincial (BBVA)', 'BNC', 'Bancamiga', 'Banco del Tesoro', 'Bicentenario', 'Banco Exterior', 'Banplus', 'Banco Plaza', 'Sofitasa', 'Banco Activo', 'Bancaribe', 'Banco Caroní', '100% Banco', 'Fondo Común', 'Delsur', 'Bancrecer', 'Banco Agrícola'];
   const montoDe = (m, p) => (m.moneda === 'USD' ? p.total_usd : m.moneda === 'VES' ? p.total_usd * cfg.tasa_usd_ves : p.total_usd / cfg.tasa_eur_usd);
@@ -202,7 +206,9 @@
           ? `Documento <code>${e(m.tipo_doc)}-${e(m.documento)}</code> · Teléfono <code>${e(m.telefono)}</code>` : `Cuenta <code>${e(m.num_cuenta)}</code> (${e(m.tipo_cuenta || '')})<br>Titular: ${e(m.titular)} · <code>${e(m.documento)}</code>`}${m.observacion ? `<br>${e(m.observacion)}` : ''}</div>
           <div style="margin-top:6px"><b>Monto a pagar: ${montoTxt(m, p)}</b></div></div></div></label>`).join('')}</div>
       <form id="pf" class="form" style="margin-top:10px">
-        <div class="full" id="pcon" hidden><label id="pconl">¿Con cuánto vas a pagar? (para llevarte el vuelto listo)</label><input name="paga_con" type="number" step="any" min="0" inputmode="decimal" placeholder="Déjalo vacío si pagas exacto"></div>
+        <div class="full" id="pcon" hidden><label id="pconl">¿Con qué denominación vas a pagar? *</label><input name="paga_con" type="number" step="any" min="0" inputmode="decimal" placeholder="Billete o monto que entregarás">
+          <div id="pcon-s" class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap"></div>
+          <div class="muted" style="font-size:12px;margin-top:4px">Escribe el billete o el monto que le entregarás al repartidor. Así llevamos el vuelto listo. Si pagas justo, escribe el mismo monto del pedido.</div></div>
         <div class="full sol-elec"><label>¿Desde qué banco pagaste? *</label><select name="banco" required><option value="">Selecciona tu banco…</option>${BANCOS.map((b) => `<option>${e(b)}</option>`).join('')}<option value="__otro">Otro banco…</option></select></div>
         <div class="full sol-elec" id="otrob" hidden><label>Escribe el nombre de tu banco *</label><input name="banco_otro" autocomplete="off"></div>
         <div><label>Monto pagado *</label><input name="monto" type="number" step="any" min="0" required value="${unico ? montoDe(medios[0], p).toFixed(2) : ''}"></div>
@@ -217,7 +223,17 @@
       const rec = alRecibir(m);
       f.querySelectorAll('.sol-elec').forEach((x) => { x.hidden = rec || (x.id === 'otrob' && f.banco.value !== '__otro'); });
       f.banco.required = !rec; f.ref.required = !rec;
-      const pc = $('#pcon'); pc.hidden = m.medio !== 'efectivo'; if (m.medio === 'efectivo') { f.paga_con.value = ''; $('#pconl').textContent = '¿Con cuánto vas a pagar? (' + (m.moneda === 'USD' ? 'dólares' : m.moneda === 'EUR' ? 'euros' : 'bolívares') + ', para llevarte el vuelto listo)'; }
+      const pc = $('#pcon'); pc.hidden = m.medio !== 'efectivo'; f.paga_con.required = m.medio === 'efectivo';
+      if (m.medio === 'efectivo') {
+        const total = Math.round(montoDe(m, p) * 100) / 100, sim = m.moneda === 'USD' ? '$ ' : m.moneda === 'EUR' ? '€ ' : 'Bs ';
+        f.paga_con.value = ''; f.paga_con.min = total;
+        $('#pconl').textContent = '¿Con qué denominación vas a pagar en ' + (m.moneda === 'USD' ? 'dólares' : m.moneda === 'EUR' ? 'euros' : 'bolívares') + '? *';
+        const billetes = m.moneda === 'VES' ? [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000] : [1, 2, 5, 10, 20, 50, 100, 200];
+        let opc = billetes.filter((b) => b >= total).slice(0, 4);
+        if (!opc.length) opc = [Math.ceil(total / 100) * 100];
+        $('#pcon-s').innerHTML = [total, ...opc.filter((b) => b > total)].map((v, i) => `<button type="button" class="btn sm" data-den="${v}">${i === 0 ? 'Justo ' : ''}${sim}${v.toLocaleString('es-VE', { minimumFractionDigits: v % 1 ? 2 : 0, maximumFractionDigits: 2 })}</button>`).join('');
+        $('#pcon-s').querySelectorAll('[data-den]').forEach((b) => b.onclick = () => { f.paga_con.value = b.dataset.den; });
+      }
       $('#bpago').textContent = rec ? 'Confirmar: pagaré al recibir' : 'Enviar reporte de pago';
     };
     const ya = lista.querySelector('input[name=mid]:checked'); if (ya) ajustar(medios.find((x) => x.id === +ya.value));
@@ -237,7 +253,12 @@
       const mSel = medios.find((x) => x.id === +sel.value);
       const emisor = alRecibir(mSel) ? '' : f.banco.value === '__otro' ? f.banco_otro.value.trim() : f.banco.value;
       if (!alRecibir(mSel) && !emisor) return toast('Indica desde qué banco pagaste', 'bad');
-      const btn = f.querySelector('button'); btn.disabled = true;
+      if (mSel.medio === 'efectivo') {
+        const total = Math.round(montoDe(mSel, p) * 100) / 100;
+        if (!f.paga_con.value) { f.paga_con.focus(); return toast('Indica con qué denominación vas a pagar para preparar tu vuelto', 'bad'); }
+        if (+f.paga_con.value < total - 0.005) { f.paga_con.focus(); return toast('Con ese monto no alcanza para el total del pedido', 'bad'); }
+      }
+      const btn = f.querySelector('button[type=submit], #bpago'); btn.disabled = true;
       try {
         let comprobante = null;
         if (!alRecibir(mSel) && f.img.files[0]) comprobante = await reducir(f.img.files[0]);

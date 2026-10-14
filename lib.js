@@ -54,11 +54,22 @@ function reservadoDe(id, excluirPedido) {
     id, D.ahora(), excluirPedido || 0).s;
 }
 function disponible(id, excluirPedido) { return stockDe(id) - reservadoDe(id, excluirPedido); }
-function mov(producto_id, tipo, cantidad, costo, motivo, ref_tipo, ref_id, usuario, jornada_id) {
-  return D.insert(`INSERT INTO inventario_movimientos(producto_id,fecha,tipo,cantidad,costo_usd,motivo,ref_tipo,ref_id,usuario,jornada_id)
-                   VALUES(?,?,?,?,?,?,?,?,?,?)`, producto_id, D.ahora(), tipo, cantidad, costo || 0, motivo || null,
-    ref_tipo || null, ref_id || null, usuario || null, jornada_id || null);
+// Único lugar donde se registra un movimiento de inventario. Calcula el costo con el que se valora (promedio móvil, ver D.kardexPaso)
+// y deja en el movimiento la existencia, el valor y el costo promedio resultantes. El costo del producto sigue al promedio.
+function movimiento(producto_id, tipo, cantidad, costo, motivo, ref_tipo, ref_id, usuario, jornada_id) {
+  const p = D.get('SELECT costo_usd FROM productos WHERE id=?', producto_id);
+  if (!p) err(404, 'Producto inexistente');
+  const ult = D.get('SELECT saldo_cant, saldo_valor, costo_prom FROM inventario_movimientos WHERE producto_id=? ORDER BY id DESC LIMIT 1', producto_id);
+  const est = ult && ult.saldo_cant != null ? { sq: ult.saldo_cant, sv: ult.saldo_valor, prom: ult.costo_prom }
+    : { sq: stockDe(producto_id), sv: stockDe(producto_id) * p.costo_usd, prom: p.costo_usd || 0 };
+  const r = D.kardexPaso(est, tipo, cantidad, costo);
+  const id = D.insert(`INSERT INTO inventario_movimientos(producto_id,fecha,tipo,cantidad,costo_usd,motivo,ref_tipo,ref_id,usuario,jornada_id,saldo_cant,saldo_valor,costo_prom)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, producto_id, D.ahora(), tipo, cantidad, r.costo, motivo || null,
+    ref_tipo || null, ref_id || null, usuario || null, jornada_id || null, r.sq, r.sv, r.prom);
+  if (D.CAMBIAN_PROMEDIO.has(tipo) && Math.abs(r.prom - (p.costo_usd || 0)) > 1e-9) D.run('UPDATE productos SET costo_usd=? WHERE id=?', r.prom, producto_id);
+  return { id, costo: r.costo, costo_prom: r.prom, saldo_cant: r.sq, saldo_valor: r.sv };
 }
+const mov = (...a) => movimiento(...a).id;
 function precioPorMargen(costo, margen) { return r2(costo * (1 + margen / 100)); }
 
 // ---------- cuentas ----------
@@ -197,6 +208,10 @@ function crearVenta(o) {
     cliente = D.get('SELECT * FROM clientes WHERE id=?', cliente_id);
     if (!cliente) err(400, 'Cliente inexistente');
   }
+  if (origen === 'pos' && op.venta_requiere_cliente) {
+    if (!cliente) err(400, 'Identifica al cliente (cédula o RIF) para registrar la venta');
+    if (!String(cliente.documento || '').trim()) err(400, `Falta la cédula o RIF de "${cliente.nombre}": complétala para registrar la venta`);
+  }
   if (hayCredito) {
     if (!cliente) err(400, 'La venta a crédito requiere un cliente identificado');
     if (cliente.estado !== 'activo') err(409, 'Cliente suspendido: no puede comprar a crédito');
@@ -215,9 +230,10 @@ function crearVenta(o) {
                             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, numero, cliente_id || null, turno.id, usuario, origen, pedido_id,
     'completada', subtotal, descuento, total, vuelto, D.ahora(), jor.id);
   for (const l of lineas) {
+    // el consumo se valora al costo promedio vigente en este momento; el mismo costo queda en el detalle de la venta
+    const m = movimiento(l.p.id, 'venta', -l.cant, l.p.costo_usd, 'Venta ' + numero, 'venta', ventaId, usuario, jor.id);
     D.insert('INSERT INTO venta_detalles(venta_id,producto_id,cantidad,precio_usd,costo_usd,descuento_usd) VALUES(?,?,?,?,?,?)',
-      ventaId, l.p.id, l.cant, l.precio, l.p.costo_usd, l.desc);
-    mov(l.p.id, 'venta', -l.cant, l.p.costo_usd, 'Venta ' + numero, 'venta', ventaId, usuario, jor.id);
+      ventaId, l.p.id, l.cant, l.precio, m.costo, l.desc);
   }
   for (const p of pagos) {
     if (p.medio === 'credito') continue;
@@ -328,31 +344,68 @@ function guardarCompra(o, usuario) {
     if (!p) err(400, 'Producto inexistente en la compra');
     const cant = Number(it.cantidad), costo = Number(it.costo_unit);
     if (!(cant > 0) || !(costo >= 0)) err(400, `Cantidad o costo inválido para "${p.nombre}"`);
-    D.insert('INSERT INTO compra_detalles(compra_id,producto_id,cantidad,costo_unit,unidades) VALUES(?,?,?,?,?)',
-      id, p.id, cant, costo, cant * p.factor);
+    D.insert('INSERT INTO compra_detalles(compra_id,producto_id,cantidad,costo_unit,unidades,cantidad_pedida,costo_pedido) VALUES(?,?,?,?,?,?,?)',
+      id, p.id, cant, costo, cant * p.factor, cant, costo);
     total += cant * costo;
   }
-  D.run('UPDATE compras SET total_moneda=? WHERE id=?', r2(total), id);
+  D.run('UPDATE compras SET total_moneda=?, total_pedido=? WHERE id=?', r2(total), r2(total), id);
   audit(usuario, 'compra_borrador', 'compra', id, { total });
   return id;
 }
 
-function recibirCompra(id, o, usuario) {
+// La orden pasa a "enviada": se pidió al proveedor. Queda registrado quién, cuándo y por qué medio, y las cantidades pedidas ya no cambian.
+function enviarCompra(id, o, usuario) {
   const c = D.get('SELECT * FROM compras WHERE id=?', id);
   if (!c) err(404, 'Compra no encontrada');
-  if (c.estado !== 'borrador') err(409, 'Solo se pueden recibir compras en borrador');
+  if (c.estado !== 'borrador') err(409, c.estado === 'enviada' ? 'La orden ya fue enviada al proveedor' : 'Solo se puede enviar una orden que esté en borrador');
+  const medio = ['whatsapp', 'correo', 'telefono', 'en_persona', 'otro'].includes(o.medio_envio) ? o.medio_envio : 'otro';
+  D.run("UPDATE compras SET estado='enviada', enviada_en=?, enviada_por=?, envio_medio=?, envio_nota=? WHERE id=?", D.ahora(), usuario, medio, String(o.nota || '').trim() || null, c.id);
+  audit(usuario, 'compra_enviada', 'compra', c.id, { numero: c.numero, medio });
+}
+
+// Al recibir, lo que llega no tiene que ser exactamente lo pedido: se ajusta la cantidad (y el costo de la factura) de cada línea.
+// La orden conserva lo pedido en cantidad_pedida y costo_pedido; cantidad y costo_unit quedan con lo recibido.
+function ajustarRecepcion(c, items) {
+  const dets = D.all('SELECT d.*, p.nombre, p.factor FROM compra_detalles d JOIN productos p ON p.id=d.producto_id WHERE d.compra_id=?', c.id);
+  const dadas = new Map();
+  for (const it of items) {
+    const k = Number(it.detalle_id);
+    if (!dets.some((d) => d.id === k)) err(400, 'Una de las líneas no pertenece a esta orden');
+    dadas.set(k, it);
+  }
+  let total = 0, hayRecibido = false, diferencias = 0;
+  for (const d of dets) {
+    const a = dadas.get(d.id) || {};
+    const cant = a.cantidad != null && a.cantidad !== '' ? Number(a.cantidad) : d.cantidad;
+    const costo = a.costo_unit != null && a.costo_unit !== '' ? Number(a.costo_unit) : d.costo_unit;
+    if (!(cant >= 0) || !(costo >= 0)) err(400, `Cantidad o costo inválido para "${d.nombre}"`);
+    if (cant > 0) hayRecibido = true;
+    if (Math.abs(cant - (d.cantidad_pedida ?? d.cantidad)) > 1e-9 || Math.abs(costo - (d.costo_pedido ?? d.costo_unit)) > 1e-9) diferencias++;
+    D.run('UPDATE compra_detalles SET cantidad=?, unidades=?, costo_unit=? WHERE id=?', cant, cant * d.factor, costo, d.id);
+    total += cant * costo;
+  }
+  if (!hayRecibido) err(400, 'Indica al menos un producto recibido. Si no llegó nada, anula la orden.');
+  D.run('UPDATE compras SET total_moneda=? WHERE id=?', r2(total), c.id);
+  return diferencias;
+}
+
+function recibirCompra(id, o, usuario) {
+  let c = D.get('SELECT * FROM compras WHERE id=?', id);
+  if (!c) err(404, 'Compra no encontrada');
+  if (!['borrador', 'enviada'].includes(c.estado)) err(409, 'Solo se pueden recibir órdenes de compra pendientes');
   const jor = requireJornada();
+  const diferencias = Array.isArray(o.items) && o.items.length ? ajustarRecepcion(c, o.items) : 0;
+  c = D.get('SELECT * FROM compras WHERE id=?', id); // con el total de lo realmente recibido
   const condicion = o.condicion || c.condicion;
   const tasa = tasaDe(c.moneda, jor);
   const totalUSD = aUSD(c.total_moneda, c.moneda, jor);
   const op = D.param('operacion');
   for (const d of D.all('SELECT * FROM compra_detalles WHERE compra_id=?', c.id)) {
+    if (!(d.unidades > 0)) continue; // lo que no llegó no entra al inventario
     const p = D.get('SELECT * FROM productos WHERE id=?', d.producto_id);
     const costoUnidadMoneda = d.costo_unit / p.factor;
     const costoUSD = aUSD(costoUnidadMoneda, c.moneda, jor);
-    const stock = Math.max(0, stockDe(p.id));
-    const nuevoCosto = stock + d.unidades > 0 ? r4((stock * p.costo_usd + d.unidades * costoUSD) / (stock + d.unidades)) : costoUSD;
-    mov(p.id, 'compra', d.unidades, costoUSD, 'Compra ' + c.numero, 'compra', c.id, usuario, jor.id);
+    const { costo_prom: nuevoCosto } = movimiento(p.id, 'compra', d.unidades, costoUSD, 'Compra ' + c.numero, 'compra', c.id, usuario, jor.id);
     D.run('UPDATE compra_detalles SET costo_usd_unidad=? WHERE id=?', costoUSD, d.id);
     let precio = p.precio_usd;
     if (!p.precio_fijo) precio = precioPorMargen(nuevoCosto, p.margen);
@@ -373,9 +426,9 @@ function recibirCompra(id, o, usuario) {
     D.insert('INSERT INTO cxp(proveedor_id,compra_id,total_usd,saldo_usd,vence,estado,creado) VALUES(?,?,?,?,?,?,?)',
       c.proveedor_id, c.id, totalUSD, totalUSD, D.sumarDias(dias), 'pendiente', D.ahora());
   }
-  D.run("UPDATE compras SET estado='recibida', condicion=?, tasa=?, total_usd=?, recibida_en=?, jornada_id=? WHERE id=?",
-    condicion, tasa, totalUSD, D.ahora(), jor.id, c.id);
-  audit(usuario, 'compra_recibida', 'compra', c.id, { numero: c.numero, total_usd: totalUSD });
+  D.run("UPDATE compras SET estado='recibida', condicion=?, tasa=?, total_usd=?, recibida_en=?, jornada_id=?, recibida_por=?, factura=?, factura_fecha=?, recepcion_nota=?, con_diferencias=? WHERE id=?",
+    condicion, tasa, totalUSD, D.ahora(), jor.id, usuario, String(o.factura || '').trim() || null, String(o.factura_fecha || '').trim() || null, String(o.recepcion_nota || '').trim() || null, diferencias ? 1 : 0, c.id);
+  audit(usuario, 'compra_recibida', 'compra', c.id, { numero: c.numero, total_usd: totalUSD, diferencias, total_pedido: c.total_pedido });
   void op;
 }
 
@@ -389,6 +442,7 @@ function anularCompra(id, motivo, usuario) {
     if (cxp && cxp.saldo_usd < cxp.total_usd - 0.005) err(409, 'La cuenta por pagar tiene abonos: no se puede anular');
     const jor = jornadaAbierta();
     for (const d of D.all('SELECT * FROM compra_detalles WHERE compra_id=?', c.id)) {
+      if (!(d.unidades > 0)) continue; // línea que no llegó: nunca entró al inventario
       if (stockDe(d.producto_id) < d.unidades - 1e-9) {
         const p = D.get('SELECT nombre FROM productos WHERE id=?', d.producto_id);
         err(409, `No se puede anular: ya se vendió parte de "${p.nombre}"`);
@@ -428,7 +482,7 @@ function analisisCompras() {
   for (const r of D.all("SELECT producto_id, MIN(substr(fecha,1,10)) AS f FROM inventario_movimientos WHERE tipo='venta' GROUP BY producto_id")) primera.set(r.producto_id, r.f);
   for (const r of D.all('SELECT producto_id, SUM(cantidad) AS s FROM inventario_movimientos GROUP BY producto_id')) stocks.set(r.producto_id, r.s);
   for (const r of D.all("SELECT producto_id, SUM(cantidad) AS s FROM reservas WHERE estado='activa' AND expira>? GROUP BY producto_id", D.ahora())) reservas.set(r.producto_id, r.s);
-  for (const r of D.all("SELECT d.producto_id, SUM(d.unidades) AS s FROM compra_detalles d JOIN compras c ON c.id=d.compra_id WHERE c.estado='borrador' GROUP BY d.producto_id")) pendientes.set(r.producto_id, r.s);
+  for (const r of D.all("SELECT d.producto_id, SUM(d.unidades) AS s FROM compra_detalles d JOIN compras c ON c.id=d.compra_id WHERE c.estado IN ('borrador','enviada') GROUP BY d.producto_id")) pendientes.set(r.producto_id, r.s);
   const clase = new Map(clasificarABC().productos.map((p) => [p.id, p.clase]));
   const provs = new Map(D.all('SELECT id, nombre, plazo_entrega FROM proveedores').map((p) => [p.id, p]));
   const filas = [];
@@ -670,7 +724,7 @@ function generarConteo(usuario, responsable, _ignorado, regenerar) {
 
 module.exports = {
   HttpError, err, r2, r4, MONEDAS, MEDIOS, audit, jornadaAbierta, requireJornada, ultimaTasa, tasaDe, aUSD, deUSD,
-  stockDe, reservadoDe, disponible, mov, precioPorMargen, saldoCuenta, cuentaMov, cuentaEfectivo, resolverCuentaPago,
-  crearVenta, anularVenta, turnoAbiertoDe, cobrarCxc, pagarCxp, guardarCompra, recibirCompra, anularCompra, sugerenciasCompra, analisisCompras,
+  stockDe, reservadoDe, disponible, mov, movimiento, precioPorMargen, saldoCuenta, cuentaMov, cuentaEfectivo, resolverCuentaPago,
+  crearVenta, anularVenta, turnoAbiertoDe, cobrarCxc, pagarCxp, guardarCompra, enviarCompra, recibirCompra, anularCompra, sugerenciasCompra, analisisCompras,
   resumenTurno, barrerReservas, liberarReservas, semaforo, clasificarABC, generarConteo, cuotasDelDia, leerArrastre
 };
