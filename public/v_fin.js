@@ -116,20 +116,61 @@
 
   async function nuevaCompra(root) {
     const [provs, cuentas] = await Promise.all([api.get('/api/proveedores?activo=1'), api.get('/api/cuentas')]);
+    const an = await api.get('/api/compras/analisis').catch(() => null); // base de la reposición asistida: ventas, stock, plazo del proveedor
     root.innerHTML = `<div class="topbar"><h1 style="margin:0">Nueva compra</h1><a class="btn" href="#/compras">← Volver</a></div>
       <div class="card"><div class="row"><div class="grow"><label>Proveedor *</label><select id="pv">${provs.map((p) => `<option value="${p.id}" data-d="${p.dias_credito}">${e(p.nombre)}</option>`).join('')}</select></div>
       <div><label>Moneda de la factura</label><select id="mo"><option>USD</option><option>VES</option><option>EUR</option></select></div>
       <div><label>Condición</label><select id="co"><option value="contado">Contado</option><option value="credito">Crédito</option></select></div>
       <div id="bloque-ct" class="row"><div><label>Medio</label><select id="me"><option value="efectivo">Efectivo</option><option value="transferencia">Transferencia</option><option value="pago_movil">Pago móvil</option></select></div><div><label>Cuenta</label><select id="cu"></select></div><div><label>Referencia</label><input id="re"></div></div>
       <div id="bloque-cr" hidden><label>Días de crédito</label><input id="dc" type="number" min="0" value="${provs[0] ? provs[0].dias_credito : 0}" style="width:110px"></div></div></div>
+      <div class="card" id="asist"></div>
       <div class="card" id="items"></div><div class="card"><label>Nota</label><input id="nt"></div>
       <div class="chips"><button class="btn" data-a="borrador">Guardar como borrador (orden de compra)</button><button class="btn pri" data-a="recibir">Guardar y recibir mercancía</button></div>`;
     const picker = itemsPicker($('#items', root), { modo: 'compra' });
     const refrescarCuentas = () => { $('#cu', root).innerHTML = cuentas.filter((c) => c.activo && c.moneda === $('#mo', root).value && (c.tipo !== 'caja' || $('#me', root).value === 'efectivo') && (c.tipo === 'caja') === ($('#me', root).value === 'efectivo')).map((c) => `<option value="${c.id}">${e(c.nombre)} (${mon(c.saldo, c.moneda)})</option>`).join('') || '<option value="">Sin cuenta en esta moneda</option>'; };
     const sw = () => { $('#bloque-ct', root).hidden = $('#co', root).value !== 'contado'; $('#bloque-cr', root).hidden = $('#co', root).value === 'contado'; refrescarCuentas(); };
     ['mo', 'co', 'me'].forEach((id) => $('#' + id, root).onchange = sw);
-    $('#pv', root).onchange = () => { $('#dc', root).value = $('#pv', root).selectedOptions[0].dataset.d; };
+    // ---- reposición asistida o manual ----
+    const NIVT = { agotado: ['bad', 'Agotado'], critico: ['bad', 'Crítico'], reponer: ['warn', 'Reponer'], planificar: ['info', 'Planificar'] };
+    const f1 = (n) => (n == null ? '—' : Number(n).toLocaleString('es-VE', { maximumFractionDigits: 1 }));
+    let asistida = true, incluirPlan = false, ultima = '';
+    const sinTocar = () => JSON.stringify(picker.get()) === ultima; // true mientras la lista sea exactamente la propuesta
+    const propuesta = () => {
+      const prov = +$('#pv', root).value, niv = incluirPlan ? ['agotado', 'critico', 'reponer', 'planificar'] : ['agotado', 'critico', 'reponer'];
+      return (an ? an.filas : []).filter((x) => x.proveedor_id === prov && niv.includes(x.nivel) && x.sugerido_compra > 0);
+    };
+    function pintarAsist(lista) {
+      const prov = $('#pv', root).selectedOptions[0];
+      const cuerpo = !asistida ? '<p class="muted" style="margin:10px 0 0">Armas la orden tú: busca los productos abajo y escribe las cantidades.</p>'
+        : !an ? '<p class="bad" style="margin:10px 0 0">No se pudo calcular la reposición. Puedes armar la orden en modo manual.</p>'
+        : !lista.length ? `<p class="muted" style="margin:10px 0 0">Con las ventas y el stock actuales, a <b>${e(prov ? prov.textContent : 'este proveedor')}</b> no hay nada que reponer${incluirPlan ? '' : '. Puedes incluir también lo que conviene planificar o pasar a modo manual'}.</p>`
+        : `<p class="muted" style="margin:10px 0 6px">Propuesta para <b>${e(prov.textContent)}</b>: ${lista.length} producto(s), según ventas recientes, plazo de entrega y lo que ya tienes pedido. Cambia las cantidades o quita líneas como quieras.</p>
+          ${A.tabla([{ h: 'Producto', f: (x) => `<b>${e(x.nombre)}</b>` }, { h: 'Prioridad', f: (x) => A.tag(NIVT[x.nivel][1], NIVT[x.nivel][0]) }, { h: 'Existencia', n: 1, f: (x) => fm(x.stock, 0) + (x.pendiente ? ` <span class="muted">(+${fm(x.pendiente, 0)} pedidas)</span>` : '') },
+            { h: 'Ventas/día', n: 1, f: (x) => f1(x.venta_dia) }, { h: 'Alcanza', n: 1, f: (x) => (x.cobertura_dias == null ? '—' : f1(x.cobertura_dias) + ' d') }, { h: 'Por qué', f: (x) => `<span class="muted" style="font-size:12px">${e(x.motivo)}</span>` }], lista)}`;
+      $('#asist', root).innerHTML = `<div class="row" style="justify-content:space-between;align-items:center"><div><h2 style="margin:0">¿Cómo armar la orden?</h2></div>
+        <div class="row"><button class="btn ${asistida ? 'pri' : ''}" data-m="a">Asistida (sugerida)</button><button class="btn ${asistida ? '' : 'pri'}" data-m="m">Manual</button></div></div>
+        ${cuerpo}${asistida && an ? `<div class="row" style="margin-top:10px;align-items:center"><label class="check" style="margin:0"><input type="checkbox" data-plan ${incluirPlan ? 'checked' : ''}> <span>Incluir lo que conviene planificar</span></label><button class="btn sm" data-re>Proponer de nuevo</button></div>` : ''}`;
+      $('#asist', root).querySelectorAll('[data-m]').forEach((b) => b.onclick = () => {
+        const quiere = b.dataset.m === 'a';
+        if (quiere === asistida) return;
+        asistida = quiere;
+        if (asistida) proponer(); else { if (sinTocar()) { picker.set([]); ultima = ''; } pintarAsist([]); }
+      });
+      const re = $('[data-re]', $('#asist', root)); if (re) re.onclick = proponer;
+      const pl = $('[data-plan]', $('#asist', root)); if (pl) pl.onchange = () => { incluirPlan = pl.checked; if (sinTocar()) proponer(); else pintarAsist(propuesta()); };
+    }
+    function proponer() {
+      const lista = propuesta();
+      const items = lista.map((x) => ({ producto_id: x.id, nombre: x.nombre, cantidad: x.sugerido_compra, costo_unit: +(x.costo_usd * x.factor).toFixed(4), precio_usd: 0, unidad_compra: x.unidad_compra, unidad_venta: x.unidad_venta }));
+      picker.set(items); ultima = JSON.stringify(items); pintarAsist(lista);
+    }
+    $('#pv', root).onchange = () => {
+      $('#dc', root).value = $('#pv', root).selectedOptions[0].dataset.d;
+      if (!asistida) return;
+      if (sinTocar()) proponer(); else { pintarAsist(propuesta()); A.toast('Cambiaste de proveedor: pulsa «Proponer de nuevo» para recalcular la lista', 'bad'); }
+    };
     sw();
+    if (provs.length) proponer(); else pintarAsist([]);
     const guardar = async (recibir) => {
       const items = picker.get().map((i) => ({ producto_id: i.producto_id, cantidad: i.cantidad, costo_unit: i.costo_unit }));
       const r = await api.post('/api/compras', { proveedor_id: +$('#pv', root).value, moneda: $('#mo', root).value, condicion: $('#co', root).value, medio: $('#me', root).value, cuenta_id: +$('#cu', root).value || undefined, referencia: $('#re', root).value, dias_credito: +$('#dc', root).value, nota: $('#nt', root).value, items, recibir });

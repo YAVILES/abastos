@@ -71,6 +71,14 @@
   };
 
   // ======================= PUNTO DE VENTA =======================
+  // iconos de los mosaicos de cobro
+  const ICO_PAGO = {
+    efectivo: '<rect x="2.5" y="6" width="19" height="12" rx="2"/><circle cx="12" cy="12" r="2.8"/>',
+    pago_movil: '<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M10 6h4M11 18h2"/>',
+    transferencia: '<path d="M4 8h14l-3-3M20 16H6l3 3"/>',
+    punto: '<rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="M2.5 10h19M6 15h4"/>',
+    credito: '<path d="M12 2v20M17 6H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>'
+  };
   A.vistas.pos = async (root, arg) => {
     if (!S.jornada) { root.innerHTML = '<h1>Punto de venta</h1><div class="card"><p>No hay un día operativo abierto.</p><a class="btn pri" href="#/inicio">Abrir el día</a></div>'; return; }
     if (!S.turno) { root.innerHTML = '<h1>Punto de venta</h1><div class="card"><p>Debes abrir tu caja para vender.</p><a class="btn pri" href="#/caja">Abrir caja</a></div>'; return; }
@@ -81,12 +89,12 @@
     const sinCliente = requiere ? 'Sin identificar' : 'Consumidor final';
     const nPorValidar = (await api.get('/api/pedidos?estado=pago_reportado').catch(() => [])).length;
     root.innerHTML = `<h1>Punto de venta <span class="muted" style="font-size:13px;font-weight:400">· F2 cobrar</span></h1>
-      <div class="pos"><div><div class="card"><div class="row" style="flex-wrap:nowrap"><input id="q" placeholder="Escanea el código de barras o escribe el nombre…" autocomplete="off" autofocus><button class="btn" data-a="traer" title="Traer un pedido de delivery o de la app" style="white-space:nowrap">🛵 Pedido delivery${nPorValidar ? ` (${nPorValidar})` : ''}</button>${S.lector && S.lector.tipo === 'camara' ? '<button class="btn" data-a="camara" style="white-space:nowrap">📷 Escanear</button>' : ''}${S.reconocimiento && S.reconocimiento.disponible ? '<button class="btn" data-a="reconocer" title="Reconocer el producto con una foto" style="white-space:nowrap">📷 Foto</button>' : ''}</div><div id="res" class="pos-res" hidden></div></div>
-      <div class="card" id="carrito"></div></div>
-      <div><div class="card"><div class="row"><div class="grow"><label>Cliente</label><div id="cli" class="muted">${sinCliente}</div></div><button class="btn sm" data-a="cliente">${requiere ? 'Identificar' : 'Cambiar'}</button></div>
+      <div class="pos"><div><div class="card zona-scan"><div class="row" style="flex-wrap:nowrap"><input id="q" placeholder="Escanea el código de barras o escribe el nombre…" autocomplete="off" autofocus><button class="btn" data-a="traer" title="Traer un pedido de delivery o de la app" style="white-space:nowrap">🛵 Pedido delivery${nPorValidar ? ` (${nPorValidar})` : ''}</button>${S.lector && S.lector.tipo === 'camara' ? '<button class="btn" data-a="camara" style="white-space:nowrap">📷 Escanear</button>' : ''}${S.reconocimiento && S.reconocimiento.disponible ? '<button class="btn" data-a="reconocer" title="Reconocer el producto con una foto" style="white-space:nowrap">📷 Foto</button>' : ''}</div><div id="res" class="pos-res" hidden></div></div>
+      <div class="card zona-carrito" id="carrito"></div></div>
+      <div><div class="card zona-cliente"><div class="row"><div class="grow"><label>Cliente</label><div id="cli" class="muted">${sinCliente}</div></div><button class="btn sm" data-a="cliente">${requiere ? 'Identificar' : 'Cambiar'}</button></div>
       <div style="margin-top:10px"><label>Descuento %</label><input id="pct" type="number" min="0" max="100" step="any" value="0" style="max-width:120px"></div></div>
       <div class="total-box"><div class="muted">Total a pagar</div><div class="big" id="tot">$ 0,00</div><div class="muted" id="tot2"></div></div>
-      <div class="row" style="margin-top:12px"><button class="btn pri lg grow" data-a="cobrar" id="bcob">Cobrar</button><button class="btn" data-a="vaciar">Vaciar</button></div></div></div>`;
+      <div class="row" style="margin-top:12px"><button class="btn pri lg grow btn-cobrar" data-a="cobrar" id="bcob">Cobrar</button><button class="btn" data-a="vaciar">Vaciar</button></div></div></div>`;
     const q = $('#q', root), res = $('#res', root);
     const ccli = $('#cli', root);
 
@@ -281,7 +289,7 @@
           body.innerHTML = `<div class="row" style="justify-content:space-between"><div><div class="muted">Total</div><div style="font-size:26px;font-weight:800">${usd(t.total)}</div><div class="muted">${ves(t.total * j.tasa_usd_ves)}</div></div>
             <div class="r"><div class="muted">${hayCred ? 'A crédito' : dif >= -0.005 ? 'Vuelto' : 'Falta'}</div><div style="font-size:26px;font-weight:800" class="${hayCred || dif >= -0.005 ? 'ok' : 'bad'}">${hayCred ? usd(Math.max(0, t.total - pag)) : usd(Math.abs(dif))}</div>
             ${!hayCred && dif > 0.005 ? `<div class="muted">${ves(dif * j.tasa_usd_ves)}</div>` : ''}</div></div>
-            <div class="chips no-print" style="margin:10px 0">${[['efectivo', 'USD', '+ Efectivo $'], ['efectivo', 'VES', '+ Efectivo Bs'], ['pago_movil', 'VES', '+ Pago móvil'], ['transferencia', 'VES', '+ Transferencia'], ['punto', 'VES', '+ Punto'], ['efectivo', 'EUR', '+ Efectivo €'], ['credito', 'USD', '+ Crédito']].map(([me, mo, l], i) => `<button class="btn sm" data-add="${i}">${l}</button>`).join('')}</div>
+            <div class="mosaicos no-print">${[['efectivo', 'USD', '+ Efectivo $'], ['efectivo', 'VES', '+ Efectivo Bs'], ['pago_movil', 'VES', '+ Pago móvil'], ['transferencia', 'VES', '+ Transferencia'], ['punto', 'VES', '+ Punto'], ['efectivo', 'EUR', '+ Efectivo €'], ['credito', 'USD', '+ Crédito']].map(([me, mo, l], i) => `<button class="btn mosaico" data-add="${i}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICO_PAGO[me] || ICO_PAGO.efectivo}</svg><span>${l.replace('+ ', '')}</span></button>`).join('')}</div>
             ${lin.map((l, i) => `<div class="pago-lin"><div><label>Medio</label><select data-k="medio" data-i="${i}">${Object.entries(A.MEDIOS).map(([k, n]) => `<option value="${k}" ${k === l.medio ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
               <div><label>Moneda</label><select data-k="moneda" data-i="${i}" ${l.medio === 'credito' ? 'disabled' : ''}>${['USD', 'VES', 'EUR'].map((x) => `<option ${x === l.moneda ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
               <div><label>${l.medio === 'credito' ? 'Se calcula solo' : 'Monto'}</label><input data-k="monto" data-i="${i}" type="number" step="any" min="0" value="${e(l.monto)}" ${l.medio === 'credito' ? 'disabled' : ''}></div>

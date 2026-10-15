@@ -264,6 +264,30 @@ window.Abasto = (() => {
     ['-', 'Ventas y cobros', null], ['ventas', 'Ventas', 'mod.ventas'], ['clientes', 'Clientes y crédito', 'mod.clientes'], ['cxc', 'Cuentas por cobrar', 'mod.cxc'],
     ['-', 'Finanzas', null], ['cuentas', 'Bancos y cajas', 'mod.cuentas'], ['finanzas', 'Análisis financiero', 'mod.finanzas'], ['reportes', 'Reportes', 'mod.reportes'], ['parametros', 'Parámetros', 'mod.parametros']
   ];
+  // Iconos de línea (estilo Lucide, trazo 1.75) para el menú; cada uno es el contenido de un <svg> de 24×24
+  const ICO = {
+    inicio: '<path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/>',
+    pos: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h2M12 11h2M16 11h0M8 15h2M12 15h2M16 15h0"/>',
+    caja: '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><circle cx="12" cy="14.5" r="1.5"/>',
+    pedidos: '<path d="M6 2l-2 4v14a2 2 0 002 2h12a2 2 0 002-2V6l-2-4z"/><path d="M4 6h16"/><path d="M16 10a4 4 0 01-8 0"/>',
+    app: '<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>',
+    reparto: '<circle cx="6" cy="17" r="3"/><circle cx="18" cy="17" r="3"/><path d="M9 17h6l-3-8h-3"/><path d="M12 9l3 8"/>',
+    productos: '<path d="M21 8l-9-5-9 5 9 5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/>',
+    inventario: '<path d="M3 21V8l9-5 9 5v13"/><path d="M7 21v-8h10v8"/><path d="M7 17h10"/>',
+    conteos: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>',
+    compras: '<circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.7 12.4a2 2 0 002 1.6h7.7a2 2 0 002-1.5L21 8H6"/>',
+    proveedores: '<path d="M3 7h11v10H3z"/><path d="M14 10h4l3 3v4h-7"/><circle cx="7" cy="18" r="1.8"/><circle cx="17" cy="18" r="1.8"/>',
+    cxp: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/><path d="M7 15h4"/>',
+    ventas: '<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
+    clientes: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0113 0"/><path d="M16 4.5a3.5 3.5 0 010 7"/><path d="M18 14.2A6.5 6.5 0 0121.5 20"/>',
+    cxc: '<path d="M12 2v20"/><path d="M17 6H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>',
+    cuentas: '<path d="M3 10l9-6 9 6"/><path d="M5 10v8M9.5 10v8M14.5 10v8M19 10v8"/><path d="M3 21h18"/>',
+    finanzas: '<path d="M4 20V4"/><path d="M4 20h16"/><rect x="7" y="11" width="3" height="6" rx=".5"/><rect x="12" y="7" width="3" height="10" rx=".5"/><rect x="17" y="13" width="3" height="4" rx=".5"/>',
+    reportes: '<path d="M14 3H6a2 2 0 00-2 2v14a2 2 0 002 2h12a2 2 0 002-2V9z"/><path d="M14 3v6h6"/><path d="M8 13h8M8 17h5"/>',
+    parametros: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/>',
+    salir: '<path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/>'
+  };
+  const ico = (k) => `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICO[k] || ''}</svg>`;
   function ruta() { const h = location.hash.replace(/^#\/?/, '') || 'inicio'; const [v, ...r] = h.split('/'); return { v, arg: r.join('/') }; }
   A.ir = (h) => { location.hash = '#/' + h; };
   // Enlace de WhatsApp para un teléfono venezolano (0424… o +58424…) con el texto ya escrito
@@ -292,13 +316,17 @@ window.Abasto = (() => {
     const reqPerm = (NAV.find((x) => x[0] === v) || [])[2];
     const sinAcceso = reqPerm && !can(reqPerm);
     const vista = sinAcceso ? async (r) => { r.innerHTML = '<div class="card"><h2>Sin acceso a este módulo</h2><p class="muted">Tu rol (' + e(A.S.user.rol) + ') no incluye este módulo. Si lo necesitas, pídele al administrador que lo active en Parámetros › Roles y permisos.</p></div>'; } : (A.vistas[v] || A.vistas.inicio);
-    root.innerHTML = `<div id="app"><nav id="nav"><div class="marca">${A.S.empresa.logo ? `<img src="${A.S.empresa.logo}" alt="" style="max-width:100%;max-height:56px;display:block;margin-bottom:6px">` : '🛒 '}${e(A.S.empresa.nombre || 'Abasto Cloud')}</div>${NAV.map(([k, l, p]) => k === '-' ? `<div class="sep">${e(l)}</div>` : (p && !can(p) ? '' : `<a href="#/${k}" class="${k === v ? 'act' : ''}">${e(l)}</a>`)).join('')}
-      <div class="sep">Sesión</div><a href="#" data-salir>Salir (${e(A.S.user.usuario)})</a></nav>
+    const navPrev = document.getElementById('nav'), navTop = navPrev ? navPrev.scrollTop : 0; // el menú se redibuja en cada pantalla: conservar dónde estaba
+    root.innerHTML = `<div id="app"><nav id="nav"><div class="marca">${A.S.empresa.logo ? `<img src="${A.S.empresa.logo}" alt="" style="max-width:100%;max-height:56px;display:block;margin-bottom:6px">` : '🛒 '}${e(A.S.empresa.nombre || 'Abasto Cloud')}</div>${NAV.map(([k, l, p]) => k === '-' ? `<div class="sep">${e(l)}</div>` : (p && !can(p) ? '' : `<a href="#/${k}" class="${k === v ? 'act' : ''}">${ico(k)}<span>${e(l)}</span></a>`)).join('')}
+      <div class="sep">Sesión</div><a href="#" data-salir>${ico('salir')}<span>Salir (${e(A.S.user.usuario)})</span></a></nav>
       <div id="main"><div class="topbar"><button class="btn" id="menu-btn">☰</button><div class="chips" id="chips"></div><span class="muted">${e(A.S.user.nombre)} · ${e(A.S.user.rol)}</span></div><div id="vista"><div class="empty">Cargando…</div></div></div></div>`;
     pintarChips();
     document.getElementById('menu-btn').onclick = () => document.getElementById('nav').classList.toggle('abierto');
     root.querySelector('[data-salir]').onclick = async (ev) => { ev.preventDefault(); try { await A.api.post('/api/logout'); } catch {} cerrarSesionLocal(); };
-    document.getElementById('nav').addEventListener('click', (ev) => { if (ev.target.tagName === 'A') document.getElementById('nav').classList.remove('abierto'); });
+    const nav = document.getElementById('nav');
+    nav.scrollTop = navTop;
+    const act = nav.querySelector('a.act'); if (act) act.scrollIntoView({ block: 'nearest' }); // si la opción activa quedó fuera de vista (primera carga, enlace directo), traerla
+    nav.addEventListener('click', (ev) => { if (ev.target.closest('a')) nav.classList.remove('abierto'); });
     try { await vista(document.getElementById('vista'), arg); }
     catch (er) { document.getElementById('vista').innerHTML = `<div class="card bad">${e(er.message)}</div>`; }
   }
