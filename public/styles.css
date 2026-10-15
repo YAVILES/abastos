@@ -324,3 +324,28 @@ a.chip:hover { filter: brightness(1.08); }
 #nav .marca { position: relative; margin: -8px -4px 10px; padding: 22px 16px 20px; border: 0; border-radius: 18px; background: radial-gradient(140px 90px at 15% 0, rgba(52,195,152,.32), transparent 70%), linear-gradient(145deg, #1a3d73, var(--navy-2) 55%, #0e2243); box-shadow: inset 0 0 0 1px rgba(255,255,255,.1), 0 12px 26px rgba(0,0,0,.35); color: #fff; font-size: 20px; font-weight: 800; letter-spacing: -.01em; line-height: 1.2; }
 #nav .marca img { display: block; background: #fff; padding: 8px 10px; border-radius: 14px; width: auto; max-width: 100% !important; max-height: 76px !important; margin: 0 0 14px !important; box-shadow: 0 8px 20px rgba(0,0,0,.35), 0 0 0 3px rgba(52,195,152,.45); }
 #nav .marca::after { content: ""; display: block; width: 38px; height: 4px; border-radius: 4px; margin-top: 12px; background: linear-gradient(90deg, #34c398, var(--oro)); }
+
+/* ===== Pantalla de acceso ===== */
+.login { background: radial-gradient(700px 420px at 10% 0, rgba(52,195,152,.28), transparent 70%), radial-gradient(600px 400px at 100% 100%, rgba(21,86,192,.45), transparent 70%), linear-gradient(145deg, #0b1b34, #12284a 60%, #0a1730); padding: 24px; gap: 0; }
+.login .card { border-top-width: 0; background: #fff; }
+.login h1 { background: none; color: var(--navy-2); box-shadow: none; padding: 0; border: 0; display: block; font-size: 26px; margin: 0 0 6px; }
+.login h1::after { display: none; }
+.login .card input { min-height: 50px; border-radius: 12px; }
+.login .card .btn.pri { min-height: 52px; font-size: 17px; background: linear-gradient(180deg, #ffc82e, var(--oro)); border-color: var(--oro); color: #3a2a00; font-weight: 800; box-shadow: 0 10px 24px rgba(245,179,1,.4); }
+.login .card .btn.pri:hover { background: linear-gradient(180deg, #ffd34f, #f0ad00); }
+.login-marca { color: #fff; }
+.lm-logo { width: 64px; height: 64px; border-radius: 18px; display: grid; place-items: center; background: linear-gradient(145deg, #34c398, #0a7a5a); box-shadow: 0 14px 30px rgba(10,122,90,.5); margin-bottom: 22px; }
+.lm-logo svg { width: 34px; height: 34px; }
+.login-marca h2 { color: #fff; font-size: 36px; letter-spacing: -.03em; font-weight: 800; margin: 0 0 10px; }
+.lm-sub { color: #b9c9e4; font-size: 17px; line-height: 1.5; margin: 0 0 26px; max-width: 420px; }
+.lm-lista { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+.lm-lista li { position: relative; padding-left: 30px; color: #dbe6fb; font-weight: 600; }
+.lm-lista li::before { content: ""; position: absolute; left: 0; top: 3px; width: 18px; height: 18px; border-radius: 50%; background: #34c398 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230b1b34' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12l5 5 9-10'/%3E%3C/svg%3E") center/12px no-repeat; }
+@media (min-width: 900px) {
+  .login:has(.login-marca) { grid-template-columns: minmax(0, 1fr) minmax(380px, 460px); align-items: center; justify-content: center; gap: 72px; padding: 48px 8vw; }
+  .login:has(.login-marca) .card { width: 100%; padding: 40px; }
+}
+@media (max-width: 899px) {
+  .login:has(.login-marca) { align-content: center; gap: 24px; }
+  .login-marca { text-align: center; } .lm-logo { margin: 0 auto 14px; width: 54px; height: 54px; } .login-marca h2 { font-size: 28px; margin-bottom: 4px; } .lm-sub { margin: 0 auto; font-size: 15px; } .lm-lista { display: none; }
+}

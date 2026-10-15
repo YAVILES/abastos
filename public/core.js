@@ -338,7 +338,10 @@ window.Abasto = (() => {
     let emp = new URLSearchParams(location.search).get('e') || '';
     if (!emp) { try { emp = localStorage.getItem('abasto_empresa') || ''; } catch {} }
     const pedirEmpresa = !info.unica;
-    root.innerHTML = `<div class="login"><form class="card" id="lf"><h1>🛒 Abasto Cloud</h1><p class="muted">Ingresa con tu usuario.</p>
+    root.innerHTML = `<div class="login"><aside class="login-marca"><div class="lm-logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.7 12.4a2 2 0 002 1.6h7.7a2 2 0 002-1.5L21 8H6"/></svg></div>
+        <h2>Abasto Cloud</h2><p class="lm-sub">Inventario, ventas y delivery de tu abasto en un solo lugar.</p>
+        <ul class="lm-lista"><li>Punto de venta con cobro en varias monedas</li><li>Inventario valorizado y compras asistidas</li><li>App para tus clientes y tus repartidores</li></ul></aside>
+      <form class="card" id="lf"><h1>Bienvenido</h1><p class="muted">Ingresa con tu usuario.</p>
       ${pedirEmpresa ? `<label>Código de tu abasto</label><input name="empresa" value="${e(emp)}" autocapitalize="none" autocomplete="organization" placeholder="ej. abasto-sur" required><div style="height:10px"></div>` : ''}
       <label>Usuario</label><input name="usuario" autocomplete="username" ${pedirEmpresa && emp ? 'autofocus' : pedirEmpresa ? '' : 'autofocus'} required><div style="height:10px"></div>
       <label>Clave</label><input name="clave" type="password" autocomplete="current-password" required><div id="le" class="bad" style="margin:10px 0"></div>
