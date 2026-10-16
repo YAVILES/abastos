@@ -1547,7 +1547,7 @@ cli('POST', '/api/app/pedidos', ({ body, cliente }) => D.tx(() => {
 cli('GET', '/api/app/pedidos', ({ cliente }) => {
   L.barrerReservas();
   return D.all('SELECT p.*, o.estado AS orden_estado FROM pedidos p LEFT JOIN ordenes_entrega o ON o.pedido_id=p.id WHERE p.cliente_id=? ORDER BY p.id DESC LIMIT 50', cliente.id)
-    .map((p) => ({ id: p.id, numero: p.numero, estado: p.estado, total_usd: p.total_usd, creado: p.creado, expira: p.expira, entrega: p.entrega, semaforo: L.semaforo(p, p.orden_estado ? { estado: p.orden_estado } : null) }));
+    .map((p) => ({ id: p.id, numero: p.numero, estado: p.estado, total_usd: p.total_usd, creado: p.creado, expira: p.expira, entrega: p.entrega, calificacion: p.calificacion, semaforo: L.semaforo(p, p.orden_estado ? { estado: p.orden_estado } : null) }));
 });
 cli('GET', '/api/app/pedidos/:id', ({ params, cliente }) => {
   L.barrerReservas();
@@ -1579,6 +1579,18 @@ cli('POST', '/api/app/pedidos/:id/pago', ({ params, body, cliente }) => D.tx(() 
   D.run("UPDATE reservas SET expira=? WHERE pedido_id=? AND estado='activa'", ext, p.id);
   D.run("UPDATE pedidos SET estado='pago_reportado', expira=? WHERE id=?", ext, p.id);
   return { id };
+}));
+// Calificación del servicio: una sola vez por pedido y solo cuando ya fue entregado
+cli('POST', '/api/app/pedidos/:id/calificar', ({ params, body, cliente }) => D.tx(() => {
+  const p = D.get('SELECT * FROM pedidos WHERE id=? AND cliente_id=?', params.id, cliente.id);
+  if (!p) err(404, 'Pedido no encontrado');
+  if (p.estado !== 'entregado') err(409, 'Podrás calificar el servicio cuando recibas tu pedido');
+  if (p.calificacion) err(409, 'Ya calificaste este pedido');
+  const est = Number(body.estrellas);
+  if (!Number.isInteger(est) || est < 1 || est > 5) err(400, 'Elige de 1 a 5 estrellas');
+  const nota = body.nota ? String(body.nota).trim().slice(0, 500) : '';
+  D.run('UPDATE pedidos SET calificacion=?, calificacion_nota=?, calificado_en=? WHERE id=?', est, nota || null, D.ahora(), p.id);
+  return { ok: true };
 }));
 cli('POST', '/api/app/pedidos/:id/cancelar', ({ params, cliente }) => D.tx(() => {
   const p = D.get('SELECT * FROM pedidos WHERE id=? AND cliente_id=?', params.id, cliente.id);

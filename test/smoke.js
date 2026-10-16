@@ -300,6 +300,17 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
   assert.equal(entregado.estado, 'entregado'); assert.equal(entregado.orden.receptor, 'Ana');
   assert.equal((await ok(api('GET', '/api/reparto/mis', null, tokJuan))).entregados.length, 1);
   assert.equal((await ok(api('GET', '/api/pedidos'))).find((x) => x.id === ped.id).repartidor, 'Juan Repartidor', 'el sistema ve quién entregó');
+  { // calificación del servicio: estrellas y observación, una sola vez y solo con el pedido entregado
+    await falla(api('POST', `/api/app/pedidos/${ped.id}/calificar`, { estrellas: 0 }, ct), 400, /1 a 5/);
+    await falla(api('POST', `/api/app/pedidos/${ped.id}/calificar`, { estrellas: 6 }, ct), 400, /1 a 5/);
+    await falla(api('POST', `/api/app/pedidos/${ped.id}/calificar`, { estrellas: 3.5 }, ct), 400, /1 a 5/);
+    await ok(api('POST', `/api/app/pedidos/${ped.id}/calificar`, { estrellas: 4, nota: '  Llegó rápido y bien empacado  ' }, ct));
+    const cal = await ok(api('GET', '/api/app/pedidos/' + ped.id, null, ct));
+    assert.equal(cal.calificacion, 4); assert.equal(cal.calificacion_nota, 'Llegó rápido y bien empacado'); assert.ok(cal.calificado_en);
+    await falla(api('POST', `/api/app/pedidos/${ped.id}/calificar`, { estrellas: 5 }, ct), 409, /Ya calificaste/);
+    assert.equal((await ok(api('GET', '/api/app/pedidos', null, ct))).find((x) => x.id === ped.id).calificacion, 4, 'la lista del cliente trae su calificación');
+    assert.equal((await ok(api('GET', '/api/pedidos'))).find((x) => x.id === ped.id).calificacion, 4, 'el sistema ve la calificación');
+  }
   await falla(api('POST', `/api/ordenes/${oid}/asignar`, { repartidor_id: 1 }), 409, /ya salió/);
   assert.equal((await ok(api('GET', '/api/repartidores'))).length, 2);
   await falla(api('POST', `/api/ordenes/${oid}/preparar/escanear`, { codigo: barraP1 }), 409, /ya terminó/);
@@ -362,6 +373,7 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
 
   paso('pago rechazado libera la reserva');
   const ped2 = await ok(api('POST', '/api/app/pedidos', { items: [{ producto_id: p1, cantidad: 3 }], entrega: 'retiro' }, ct));
+  await falla(api('POST', `/api/app/pedidos/${ped2.id}/calificar`, { estrellas: 5 }, ct), 409, /cuando recibas/); // aún no entregado
   await ok(api('POST', `/api/app/pedidos/${ped2.id}/pago`, { medio_app_id: medio.id, monto: 156, banco_emisor: 'BNC', referencia: 'REF002' }, ct));
   const d2 = await ok(api('GET', '/api/pedidos/' + ped2.id));
   await falla(api('POST', `/api/pedidos/${ped2.id}/rechazar-pago`, { pago_id: d2.pagos[0].id }), 400);

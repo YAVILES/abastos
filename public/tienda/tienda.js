@@ -161,7 +161,7 @@
   const luz = (s) => `<div class="semaforo ${s.color}"><span class="luz"></span><span>${e(s.mensaje)}</span></div>`;
   async function vistaPedidos() {
     const rows = await api('GET', '/api/app/pedidos');
-    marco('Mis pedidos', rows.length ? rows.map((p) => `<a href="#/pedido/${p.id}" style="text-decoration:none;color:inherit"><div class="card"><div class="row" style="justify-content:space-between"><b>${e(p.numero)}</b><b>${usdFmt(p.total_usd)}</b></div><div class="muted" style="margin:4px 0 8px">${e(p.creado.slice(0, 16))}</div>${luz(p.semaforo)}</div></a>`).join('') : '<div class="card empty">Aún no has hecho pedidos.</div>', { atras: () => (location.hash = '#/catalogo') });
+    marco('Mis pedidos', rows.length ? rows.map((p) => `<a href="#/pedido/${p.id}" style="text-decoration:none;color:inherit"><div class="card"><div class="row" style="justify-content:space-between"><b>${e(p.numero)}</b><b>${usdFmt(p.total_usd)}</b></div><div class="muted" style="margin:4px 0 8px">${e(p.creado.slice(0, 16))}</div>${luz(p.semaforo)}${p.estado === 'entregado' ? (p.calificacion ? `<div style="margin-top:8px">${estrellasFijas(p.calificacion)}</div>` : '<div style="margin-top:8px"><span class="tag warn">Califica el servicio</span></div>') : ''}</div></a>`).join('') : '<div class="card empty">Aún no has hecho pedidos.</div>', { atras: () => (location.hash = '#/catalogo') });
   }
   // Cada pedido se actualiza solo mientras está en pantalla. Al mostrar otro, o al volver a dibujar, se apagan los temporizadores del anterior.
   const enPantalla = (id) => ruta().v === 'pedido' && String(ruta().a) === String(id);
@@ -181,15 +181,40 @@
         <p class="muted">${p.entrega === 'envio' ? `Envío a ${e(p.contacto)} — ${e(p.zona)}, ${e(p.direccion)}` : 'Retiro en tienda'}</p></div>
       ${puedePagar && !pendiente ? seccionPago(p) : ''}
       ${pendiente ? (['efectivo', 'punto'].includes(pendiente.medio) ? '<div class="card"><b>Pagarás al recibir tu pedido.</b> Lo estamos confirmando; esta pantalla se actualiza sola.</div>' : '<div class="card"><b>Pago enviado.</b> Estamos validándolo; esta pantalla se actualiza sola.</div>') : ''}
+      ${p.estado === 'entregado' ? seccionCalificar(p) : ''}
       ${p.estado === 'pendiente' ? '<button class="btn bad" id="canc">Cancelar pedido</button>' : ''}`, { atras: () => (location.hash = '#/pedidos') });
     if (p.expira) {
       const fin = new Date(p.expira.replace(' ', 'T')).getTime();
       const tick = () => { const el = $('#cd'); if (!el) return; const s = Math.max(0, Math.round((fin - Date.now()) / 1000)); el.textContent = s ? `⏱ Tu mercancía está reservada ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} min` : 'La reserva venció.'; };
       tick(); clearInterval(cdTimer); cdTimer = setInterval(tick, 1000);
     }
+    if (p.estado === 'entregado' && !p.calificacion) conectarCalificar(p);
     const c = $('#canc'); if (c) c.onclick = async () => { try { await api('POST', `/api/app/pedidos/${id}/cancelar`); toast('Pedido cancelado'); location.hash = '#/pedidos'; } catch (er) { falla(er); } };
     if (puedePagar && !pendiente) conectarPago(p);
     const miTimer = timer = setInterval(async () => { if (!enPantalla(id)) return clearInterval(miTimer); try { const n = await api('GET', '/api/app/pedidos/' + id); if (!enPantalla(id)) return; if (n.estado !== p.estado || n.semaforo.paso !== p.semaforo.paso || (n.pagos.length !== p.pagos.length)) vistaPedido(id); } catch {} }, 12000);
+  }
+  // ---------- calificación del servicio ----------
+  const TXT_ESTRELLAS = ['', 'Muy malo', 'Malo', 'Regular', 'Bueno', 'Excelente'];
+  const estrellasFijas = (n) => '<span class="est" aria-label="' + n + ' de 5 estrellas">' + '★'.repeat(n) + '<span class="est-off">' + '★'.repeat(5 - n) + '</span></span>';
+  function seccionCalificar(p) {
+    if (p.calificacion) return `<div class="card" style="margin-top:12px"><h2>Tu calificación</h2><div class="est-grande">${estrellasFijas(p.calificacion)}</div><b>${TXT_ESTRELLAS[p.calificacion]}</b>${p.calificacion_nota ? `<p class="muted" style="margin:8px 0 0">«${e(p.calificacion_nota)}»</p>` : ''}<p class="muted" style="margin:8px 0 0">¡Gracias por contarnos cómo te fue!</p></div>`;
+    return `<div class="card cal" style="margin-top:12px"><h2>¿Cómo fue el servicio?</h2><p class="muted" style="margin-top:-6px">Toca las estrellas para calificar tu pedido.</p>
+      <div class="estrellas" role="radiogroup" aria-label="Calificación">${[1, 2, 3, 4, 5].map((n) => `<button type="button" class="estrella" data-n="${n}" role="radio" aria-checked="false" aria-label="${n} ${n === 1 ? 'estrella' : 'estrellas'}">★</button>`).join('')}</div>
+      <div class="cal-txt" id="cal-txt">&nbsp;</div>
+      <label for="cal-nota" style="margin-top:10px">Observación (opcional)</label><textarea id="cal-nota" rows="3" maxlength="500" placeholder="Cuéntanos qué salió bien o qué podemos mejorar"></textarea>
+      <button class="btn pri lg" id="cal-env" style="width:100%;margin-top:12px" disabled>Enviar calificación</button></div>`;
+  }
+  function conectarCalificar(p) {
+    let sel = 0;
+    const btns = [...document.querySelectorAll('.estrella')];
+    const pintar = (n) => { btns.forEach((b) => { b.classList.toggle('on', +b.dataset.n <= n); b.setAttribute('aria-checked', String(+b.dataset.n === sel)); }); $('#cal-txt').textContent = n ? TXT_ESTRELLAS[n] : ' '; };
+    btns.forEach((b) => { b.onclick = () => { sel = +b.dataset.n; pintar(sel); $('#cal-env').disabled = false; }; });
+    $('#cal-env').onclick = async () => {
+      if (!sel) return;
+      const bt = $('#cal-env'); bt.disabled = true;
+      try { await api('POST', `/api/app/pedidos/${p.id}/calificar`, { estrellas: sel, nota: $('#cal-nota').value }); toast('¡Gracias por tu calificación!'); vistaPedido(p.id); }
+      catch (er) { bt.disabled = false; falla(er); }
+    };
   }
   const BANCOS = ['Banco de Venezuela', 'Banesco', 'Mercantil', 'Provincial (BBVA)', 'BNC', 'Bancamiga', 'Banco del Tesoro', 'Bicentenario', 'Banco Exterior', 'Banplus', 'Banco Plaza', 'Sofitasa', 'Banco Activo', 'Bancaribe', 'Banco Caroní', '100% Banco', 'Fondo Común', 'Delsur', 'Bancrecer', 'Banco Agrícola'];
   const montoDe = (m, p) => (m.moneda === 'USD' ? p.total_usd : m.moneda === 'VES' ? p.total_usd * cfg.tasa_usd_ves : p.total_usd / cfg.tasa_eur_usd);

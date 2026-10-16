@@ -187,7 +187,7 @@ label.medio { display: block; color: inherit; font-size: inherit; font-weight: 4
 }
 
 /* ===== Capa «elegante y atrevida» ===== */
-:root { --navy: #0b1b34; --navy-2: #12284a; --azul: #1556c0; --azul-d: #0f3f93; --crema: #fff3cf; --crema-b: #f2dc9a; --oro: #f5b301; }
+:root { --mint: #34c398; --navy: #0b1b34; --navy-2: #12284a; --azul: #1556c0; --azul-d: #0f3f93; --crema: #fff3cf; --crema-b: #f2dc9a; --oro: #f5b301; }
 #nav { background: linear-gradient(180deg, var(--navy), #08132a); border-right: 0; color: #c8d3e6; }
 #nav .marca { color: #fff; border-bottom-color: rgba(255,255,255,.1); font-size: 17px; letter-spacing: .01em; }
 #nav a { color: #b9c6dc; }
@@ -349,3 +349,15 @@ a.chip:hover { filter: brightness(1.08); }
   .login:has(.login-marca) { align-content: center; gap: 24px; }
   .login-marca { text-align: center; } .lm-logo { margin: 0 auto 14px; width: 54px; height: 54px; } .login-marca h2 { font-size: 28px; margin-bottom: 4px; } .lm-sub { margin: 0 auto; font-size: 15px; } .lm-lista { display: none; }
 }
+
+/* ===== Calificación con estrellas ===== */
+.est { color: var(--oro); letter-spacing: 2px; font-size: 16px; white-space: nowrap; }
+.est .est-off { color: #d5d9e0; }
+.est-grande .est { font-size: 30px; }
+.estrellas { display: flex; justify-content: center; gap: 6px; margin: 10px 0 4px; }
+.estrella { width: 56px; height: 56px; border: 0; background: transparent; font-size: 44px; line-height: 1; color: #d5d9e0; cursor: pointer; transition: transform var(--t), color var(--t); touch-action: manipulation; padding: 0; }
+.estrella.on { color: var(--oro); text-shadow: 0 4px 14px rgba(245,179,1,.5); }
+.estrella:active { transform: scale(.9); }
+.estrella:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--brand-ring); border-radius: 12px; }
+.cal-txt { text-align: center; font-weight: 800; color: var(--navy-2); min-height: 24px; font-size: 17px; }
+.cal textarea { min-height: 88px; }

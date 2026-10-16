@@ -4,6 +4,8 @@
   const A = Abasto, { e, fm, usd, mon, api, S } = A;
   const $ = (s, r = document) => r.querySelector(s);
 
+  A.estrellas = (n) => `<span class="est" title="${n} de 5">${'★'.repeat(n)}<span class="est-off">${'★'.repeat(5 - n)}</span></span>`;
+
   // ---------- selector de ítems reutilizable (compras y pedidos de vendedor) ----------
   function itemsPicker(el, { modo }) {
     let items = [];
@@ -478,6 +480,15 @@
         ? ` <a class="btn sm" target="_blank" rel="noopener" href="${e(A.wa(p.repartidor_tel, textoAvisoReparto(p)))}">Avisar por WhatsApp</a>` : '';
       return accionBase(p) + aviso + (puede ? ` <button class="btn sm" data-a="asignar" data-o="${p.orden_id}" data-r="${p.repartidor_id || ''}">${p.repartidor ? 'Cambiar repartidor' : 'Asignar repartidor'}</button>` : '');
     };
+    const resumenCalif = () => {
+      const cal = pedidos.filter((p) => p.calificacion), entregados = pedidos.filter((p) => p.estado === 'entregado').length;
+      if (!cal.length) return '<div class="card muted">Aún ningún cliente ha calificado el servicio. Les aparece la opción en su app cuando reciben el pedido.</div>';
+      const prom = cal.reduce((s, p) => s + p.calificacion, 0) / cal.length, buenas = cal.filter((p) => p.calificacion >= 4).length;
+      const bajas = cal.filter((p) => p.calificacion <= 2);
+      return `<div class="grid g3" style="margin-bottom:20px"><div class="kpi"><div class="l">Calificación promedio</div><div class="v">${fm(prom, 1)} <span style="font-size:20px">/ 5</span></div><div class="s">${A.estrellas(Math.round(prom))}</div></div>
+        <div class="kpi"><div class="l">Han calificado</div><div class="v">${cal.length}</div><div class="s">de ${entregados} pedido(s) entregados</div></div>
+        <div class="kpi"><div class="l">Satisfechos (4 o 5 estrellas)</div><div class="v">${Math.round(buenas / cal.length * 100)} %</div><div class="s">${bajas.length ? `${bajas.length} con 1 o 2 estrellas: revisa sus observaciones` : 'ninguna calificación baja'}</div></div></div>`;
+    };
     const cols = [
       { h: 'Pedido', f: (p) => `<b>${e(p.numero)}</b>` },
       { h: 'Orden de entrega', f: (p) => (p.orden_numero ? e(p.orden_numero) : ['rechazado', 'cancelado', 'vencido'].includes(p.estado) ? '<span class="muted">No se generó</span>' : '<span class="muted">Se crea al validar el pago</span>') },
@@ -489,11 +500,13 @@
           : '<span class="muted">Sin asignar</span>') },
       { h: 'Total', n: 1, f: (p) => usd(p.total_usd) },
       { h: 'Estado', f: (p) => A.tag(estadoTxt(p), tipoTag[p.semaforo.color] || '') + (['pendiente', 'pago_reportado'].includes(p.estado) && p.expira ? `<div class="muted" style="font-size:11px">reserva hasta ${e(A.fecha(p.expira).slice(11))}</div>` : '') + (['rechazado', 'cancelado', 'vencido'].includes(p.estado) && p.motivo ? `<div class="muted" style="font-size:11px">${e(p.motivo)}</div>` : '') },
+      ...(['entregados', 'todos'].includes(f) ? [{ h: 'Calificación', f: (p) => (p.calificacion ? A.estrellas(p.calificacion) + (p.calificacion_nota ? '<div class="muted" style="font-size:11px">con comentario</div>' : '') : p.estado === 'entregado' ? '<span class="muted">Sin calificar</span>' : '') }] : []),
       { h: '', f: accion }
     ];
     root.innerHTML = `<div class="topbar"><h1 style="margin:0">Pedidos de la app</h1>${A.can('pedidos.crear') ? '<button class="btn pri" data-a="nuevo">+ Pedido de vendedor</button>' : ''}</div>
       <div class="chips" style="margin-bottom:8px">${ETAPAS.map((x) => `<a class="btn ${x.k === f ? 'pri' : ''}" href="#/pedidos/${x.k}">${e(x.t)} <span style="opacity:.75">(${cuenta[x.k]})</span></a>`).join('')}</div>
       <p class="muted" style="margin:0 0 12px">${e(etapa.ayuda)}</p>
+      ${f === 'entregados' ? resumenCalif() : ''}
       <div class="card">${A.tabla(cols, lista, { clic: true, vacio: 'No hay pedidos en esta etapa' })}</div>`;
     root.querySelectorAll('tr.click').forEach((tr) => tr.onclick = (ev) => { if (ev.target.closest('[data-a]')) return; detalle(lista[+tr.dataset.i].id); });
     if (!root._auto) root._auto = setInterval(() => { if (!document.body.contains(root)) return clearInterval(root._auto); if (document.querySelector('.velo')) return; A.vistas.pedidos(root, arg).catch(() => {}); }, 20000);
@@ -565,7 +578,8 @@
           { h: 'Estado', f: (x) => A.estadoTag(x.estado) + (x.motivo ? ` <span class="muted">${e(x.motivo)}</span>` : '') }, { h: '', f: (x) => (x.tiene_comprobante ? `<button class="btn sm" data-comp="${x.id}">Ver comprobante</button> ` : '') + (x.estado === 'pendiente' && A.can('pedidos.gestionar') ? `<button class="btn sm pri" data-val="${x.id}" data-m="${x.paga_con || x.monto}" data-mo="${x.moneda}">Validar</button> <button class="btn sm bad" data-rec="${x.id}">Rechazar</button>` : '') }], p.pagos, { vacio: 'El cliente aún no ha reportado pago' })}
         ${p.orden ? `<h3 style="margin-top:14px">Orden de entrega ${e(p.orden.numero)} ${A.estadoTag(p.orden.estado)}</h3>` : ''}
         ${p.orden && p.orden.estado === 'rechazada' ? `<div class="semaforo rojo" style="margin:8px 0"><span class="luz"></span><span style="flex:1"><b>Entrega rechazada${p.orden.rechazado_en ? ' a las ' + e(p.orden.rechazado_en.slice(11, 16)) : ''}:</b> ${e(p.orden.motivo_rechazo || '')}${p.orden.nota_entrega ? ' · ' + e(p.orden.nota_entrega) : ''}<br>El repartidor devuelve el pedido a la tienda. Reprograma la entrega o cancela el pedido (se anula la venta y el stock vuelve al inventario).</span></div>` : ''}
-        ${p.orden && p.orden.repartidor ? `<p>Repartidor: <b>${e(p.orden.repartidor)}</b>${p.orden.repartidor_tel ? ' · ' + e(p.orden.repartidor_tel) : ''}${p.orden.retirado_en ? ' · retiró ' + e(p.orden.retirado_en.slice(11, 16)) : ''}${p.orden.salida_en ? ' · salió ' + e(p.orden.salida_en.slice(11, 16)) : ''}${p.orden.entregado_en ? ' · entregó ' + e(p.orden.entregado_en.slice(11, 16)) + (p.orden.receptor ? ' (recibió ' + e(p.orden.receptor) + ')' : '') : ''}</p>${p.orden.nota_entrega ? `<p class="muted">Nota del repartidor: ${e(p.orden.nota_entrega)}</p>` : ''}` : ''}`;
+        ${p.orden && p.orden.repartidor ? `<p>Repartidor: <b>${e(p.orden.repartidor)}</b>${p.orden.repartidor_tel ? ' · ' + e(p.orden.repartidor_tel) : ''}${p.orden.retirado_en ? ' · retiró ' + e(p.orden.retirado_en.slice(11, 16)) : ''}${p.orden.salida_en ? ' · salió ' + e(p.orden.salida_en.slice(11, 16)) : ''}${p.orden.entregado_en ? ' · entregó ' + e(p.orden.entregado_en.slice(11, 16)) + (p.orden.receptor ? ' (recibió ' + e(p.orden.receptor) + ')' : '') : ''}</p>${p.orden.nota_entrega ? `<p class="muted">Nota del repartidor: ${e(p.orden.nota_entrega)}</p>` : ''}` : ''}
+        ${p.calificacion ? `<div class="card" style="margin:14px 0 0;background:var(--crema);border-color:var(--crema-b)"><b>Calificación del cliente</b> ${A.estrellas(p.calificacion)}${p.calificacion_nota ? `<p style="margin:6px 0 0">«${e(p.calificacion_nota)}»</p>` : ''}<div class="muted" style="font-size:12px">${e(A.fecha(p.calificado_en || ''))}</div></div>` : p.estado === 'entregado' ? '<p class="muted" style="margin-top:12px">El cliente aún no ha calificado este pedido.</p>' : ''}`;
       A.modal('Pedido ' + p.numero + (p.orden ? ' · Orden ' + p.orden.numero : ''), html, { ancho: true, pie: `${p.orden && p.orden.estado === 'rechazada' && A.can('pedidos.gestionar') ? '<button class="btn pri" data-repro>Reprogramar entrega</button>' : ''}${!['cancelado', 'vencido', 'rechazado', 'entregado'].includes(p.estado) && A.can('pedidos.gestionar') ? '<button class="btn bad" data-can>Cancelar pedido</button>' : ''}${sig && A.can('pedidos.gestionar') ? (['por_preparar', 'en_preparacion'].includes(p.orden.estado) ? `<button class="btn pri" data-prep="${p.orden.id}">${p.orden.estado === 'por_preparar' ? 'Empezar a preparar' : 'Continuar preparación'}</button>` : `<button class="btn pri" data-sig="${sig}">Marcar: ${e(sig.replace(/_/g, ' '))}</button>`) : ''}`, onMount: (v, cerrar) => {
         v.querySelectorAll('[data-comp]').forEach((b) => b.onclick = async () => { try { const r = await api.get(`/api/pagos-reportados/${b.dataset.comp}/comprobante`); A.modal('Comprobante', `<img src="${r.comprobante}" alt="comprobante" style="max-width:100%;border-radius:8px">`); } catch (er) { A.fail(er); } });
         v.querySelectorAll('[data-val]').forEach((b) => b.onclick = () => {
