@@ -46,7 +46,7 @@ cada uno entra con su código: `/?e=<codigo>` para el sistema y `/tienda/<codigo
 
 | Módulo | Qué hace |
 |---|---|
-| Productos | Maestro con categorías, varios códigos de barras, costo, precio fijo o por margen, mínimos y máximos, importación/exportación CSV |
+| Productos | Maestro con categorías, varios códigos de barras, costo, precio fijo o por margen, mínimos y máximos, importación/exportación CSV y **carga de inventario inicial desde Excel** (Productos › Inventario inicial: plantilla `.xlsx` con las categorías y proveedores de la empresa, revisión fila por fila antes de cargar, existencia valorizada al costo; ver `inv_excel.js`, `xlsx.js` y `plantilla_inventario_inicial.xlsx`) |
 | Existencias | Stock, reservado por la app, disponible, valor, ajustes y mermas con motivo. **Kardex valorizado al costo promedio móvil**: cada movimiento muestra su costo, el saldo, el costo promedio y el valor. Las compras recalculan el promedio; ventas, mermas, consumos y ajustes se valoran al promedio vigente en ese momento; un cambio manual del costo queda como revalorización |
 | Compras | Orden de compra en borrador → **enviada al proveedor** (queda registrado quién, cuándo y por qué medio; las cantidades pedidas ya no cambian) → recibida. Al recibir se ajustan las cantidades y el costo de cada línea según lo que llegó y la factura (N° y fecha de factura, nota); la orden conserva lo pedido y marca las diferencias. Lo que no llegó no entra al inventario. Recepción en USD/Bs/EUR, contado (sale de banco o caja) o crédito (genera cuenta por pagar), costo promedio ponderado |
 | Sugerencias de compra | Análisis por producto: ventas por día (mezcla de 7, 30 y 90 días) y tendencia, días que alcanza la existencia, plazo de entrega del proveedor, margen de seguridad según la irregularidad de las ventas y la clase ABC, punto de pedido, objetivo de stock, pedidos ya en borrador y reservas de la app. Clasifica en agotado, crítico, reponer, planificar, sobrestock y sin movimiento; sugiere cajas completas por proveedor con el motivo de cada fila, y crea las órdenes en borrador. El mínimo y el máximo del producto siguen funcionando como piso y techo |
@@ -90,7 +90,7 @@ npm test
 
 Recorre 22 escenarios de punta a punta con bases temporales: permisos, día y caja, compra en bolívares,
 venta mixta con vuelto, crédito y cobro, anulaciones, pedido por app con reserva y validación, rechazo,
-vencimiento de reserva, conteo cíclico, cierre de caja y del día, importación CSV, reconocimiento por foto contra un
+vencimiento de reserva, conteo cíclico, cierre de caja y del día, importación CSV y Excel de inventario inicial, reconocimiento por foto contra un
 servicio simulado, aislamiento entre empresas, límites de plan, licencias y respaldos.
 
 ## Lo que falta

@@ -76,3 +76,11 @@ npm run demo  # carga la empresa demo con datos de ejemplo
 - El cobro de licencias es manual (se registra el pago en el panel de la plataforma).
 - No hay límite de intentos por IP más allá del de inicio de sesión; conviene poner un proxy con límites.
 - El balance general es de la fecha actual y aún no registra activos fijos ni préstamos.
+
+## Carga de inventario inicial desde Excel
+
+- `xlsx.js` lee y escribe `.xlsx` sin dependencias (zip con `zlib`, `zlib.crc32` y XML a mano). Lee textos compartidos y en línea, números y booleanos; escribe estilos, anchos, panel congelado, filtro, celdas combinadas y listas desplegables. Se probó leyendo archivos hechos con `openpyxl` y abriendo los generados con `openpyxl`; no se ha abierto en Excel de escritorio.
+- `inv_excel.js` define las columnas, arma la plantilla (hojas Instrucciones, Inventario, Columnas y Listas) y lee el libro lleno reconociendo los encabezados con o sin acentos, con o sin asterisco, y los nombres de la plantilla CSV anterior.
+- Rutas (`routes.js`, permiso `productos.editar`): `GET /api/inventario/plantilla`, `POST /api/inventario/inicial/validar` (no escribe nada) y `POST /api/inventario/inicial/importar`. El archivo viaja en base64 dentro del JSON (tope del cuerpo: 4 MB).
+- Reglas: sin ningún código la fila se reconoce por el nombre exacto (si es único) para no duplicar al volver a cargar; la existencia solo se carga en productos sin movimientos; los precios y costos de productos existentes exigen `precio.cambiar`; las filas con error no se cargan y la carga solo procede con ellas si se pide (`omitir_errores`). Las filas que empiezan con «(Ejemplo)» se ignoran.
+- La interfaz está en `public/v_cat.js` (`asistenteInicial`) y la plantilla suelta se regenera con `node scripts/plantilla_inventario.js`.

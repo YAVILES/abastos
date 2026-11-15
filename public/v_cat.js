@@ -5,11 +5,72 @@
   const $ = (s, r = document) => r.querySelector(s);
   const opts = (rows, vacio) => [['', vacio || '— ninguno —'], ...rows.map((r) => [r.id, r.nombre])];
 
+
+  // ======================= INVENTARIO INICIAL DESDE EXCEL =======================
+  // 1) se descarga la plantilla, 2) se sube llena, 3) el sistema la revisa fila por fila sin tocar nada, 4) se carga lo correcto.
+  function asistenteInicial(alTerminar) {
+    let archivo = null, ultimo = null;
+    const base64 = async (f) => { const b = new Uint8Array(await f.arrayBuffer()); let t = ''; for (let i = 0; i < b.length; i += 0x8000) t += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(t); };
+    A.modal('Inventario inicial desde Excel', `<div class="grid g2" style="gap:14px">
+        <div class="card" style="margin:0"><h3>1. Descarga la plantilla</h3><p class="muted" style="margin-top:0">Trae tus categorías y proveedores en listas desplegables, una hoja de instrucciones y dos filas de ejemplo.</p><button class="btn pri" data-pl>Descargar plantilla Excel</button></div>
+        <div class="card" style="margin:0"><h3>2. Súbela llena</h3><p class="muted" style="margin-top:0">Guárdala como Libro de Excel (.xlsx) y elígela aquí. Antes de cargar nada se revisa fila por fila.</p><input type="file" id="fx" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div>
+      </div><div id="rv" style="margin-top:16px"></div>`,
+      { ancho: true, pie: `<label class="check" id="lo" hidden style="margin:0 auto 0 0"><input type="checkbox" id="oe"> <span>Cargar solo las filas correctas</span></label><button class="btn" data-cerrar>Cerrar</button><button class="btn pri" id="bi" disabled>Cargar inventario</button>`,
+        onMount: (v, cerrar) => {
+          const rv = $('#rv', v), bi = $('#bi', v), lo = $('#lo', v), oe = $('#oe', v);
+          $('[data-cerrar]', v).onclick = cerrar;
+          $('[data-pl]', v).onclick = () => A.descargar('/api/inventario/plantilla').then(() => A.ok('Plantilla descargada')).catch(A.fail);
+          const estado = () => {
+            if (!ultimo) { bi.disabled = true; lo.hidden = true; return; }
+            const n = ultimo.nuevos + ultimo.actualizados;
+            lo.hidden = !ultimo.con_error || n === 0;
+            bi.textContent = n ? 'Cargar ' + n + ' producto' + (n === 1 ? '' : 's') : 'Nada que cargar';
+            bi.disabled = n === 0 || (ultimo.con_error > 0 && !oe.checked);
+          };
+          oe.onchange = estado;
+          const pintar = (r) => {
+            const lista = (xs, max) => xs.slice(0, max).map((x) => '<tr><td class="n"><b>' + x.fila + '</b></td><td>' + e(x.mensaje) + '</td></tr>').join('') + (xs.length > max ? '<tr><td></td><td class="muted">…y ' + (xs.length - max) + ' más</td></tr>' : '');
+            const semaforo = r.con_error ? '<div class="semaforo ' + (r.nuevos + r.actualizados ? 'amarillo' : 'rojo') + '"><span class="luz"></span><span><b>' + r.con_error + ' fila' + (r.con_error === 1 ? '' : 's') + ' con error.</b> Corrígelas en el Excel y vuelve a subirlo' + (r.nuevos + r.actualizados ? ', o carga solo las filas correctas.' : '.') + '</span></div>'
+              : '<div class="semaforo verde"><span class="luz"></span><span><b>Todo en orden.</b> ' + (r.nuevos + r.actualizados) + ' fila' + (r.nuevos + r.actualizados === 1 ? '' : 's') + ' lista' + (r.nuevos + r.actualizados === 1 ? '' : 's') + ' para cargar.</span></div>';
+            rv.innerHTML = '<div class="grid g4" style="margin-bottom:14px">'
+              + '<div class="kpi"><div class="l">Productos nuevos</div><div class="v">' + r.nuevos + '</div><div class="s">se crean con su existencia</div></div>'
+              + '<div class="kpi"><div class="l">Se actualizan</div><div class="v">' + r.actualizados + '</div><div class="s">ya existían en el sistema</div></div>'
+              + '<div class="kpi"><div class="l">Existencia a cargar</div><div class="v">' + fm(r.unidades, r.unidades % 1 ? 2 : 0) + '</div><div class="s">unidades de venta</div></div>'
+              + '<div class="kpi"><div class="l">Valor del inventario</div><div class="v">' + usd(r.valor_usd) + '</div><div class="s">existencia × costo</div></div></div>'
+              + semaforo
+              + (r.errores.length ? '<h3 style="margin-top:16px">Filas con error</h3><div class="scroll" style="max-height:240px"><table><thead><tr><th class="n">Fila</th><th>Qué corregir</th></tr></thead><tbody>' + lista(r.errores, 60) + '</tbody></table></div>' : '')
+              + (r.avisos.length ? '<details style="margin-top:12px"><summary style="cursor:pointer"><b>' + r.avisos.length + ' aviso' + (r.avisos.length === 1 ? '' : 's') + '</b> <span class="muted">(no impiden la carga)</span></summary><div class="scroll" style="max-height:200px"><table><tbody>' + lista(r.avisos, 60) + '</tbody></table></div></details>' : '')
+              + ((r.categorias_nuevas.length || r.proveedores_nuevos.length) ? '<p class="muted" style="margin:12px 0 0">Se crearán' + (r.categorias_nuevas.length ? ' <b>' + r.categorias_nuevas.length + '</b> categoría(s) (' + e(r.categorias_nuevas.slice(0, 6).join(', ')) + (r.categorias_nuevas.length > 6 ? '…' : '') + ')' : '') + (r.categorias_nuevas.length && r.proveedores_nuevos.length ? ' y' : '') + (r.proveedores_nuevos.length ? ' <b>' + r.proveedores_nuevos.length + '</b> proveedor(es) (' + e(r.proveedores_nuevos.slice(0, 6).join(', ')) + (r.proveedores_nuevos.length > 6 ? '…' : '') + ')' : '') + '.</p>' : '')
+              + (r.vista.length ? '<h3 style="margin-top:16px">Vista previa</h3>' + A.tabla([{ h: 'Fila', n: 1, f: (x) => x.fila }, { h: 'Producto', f: (x) => e(x.nombre) }, { h: 'Qué pasa', f: (x) => A.tag(x.accion === 'crear' ? 'Nuevo' : 'Se actualiza', x.accion === 'crear' ? 'ok' : 'info') }, { h: 'Existencia', n: 1, f: (x) => fm(x.existencia, x.existencia % 1 ? 2 : 0) }, { h: 'Costo', n: 1, f: (x) => usd(x.costo) }, { h: 'Valor', n: 1, f: (x) => usd(x.valor) }], r.vista) + (r.nuevos + r.actualizados > r.vista.length ? '<p class="muted" style="margin:6px 0 0">Se muestran las primeras ' + r.vista.length + ' filas.</p>' : '') : '')
+              + '<p class="muted" style="margin:12px 0 0;font-size:12px">' + (r.omitidas ? 'Se ignoraron ' + r.omitidas + ' fila(s) de ejemplo. ' : '') + (r.ignoradas.length ? 'Columnas sin reconocer (se ignoran): ' + e(r.ignoradas.join(', ')) + '. ' : '') + 'La existencia se carga una sola vez: si un producto ya tiene movimientos, solo se actualizan sus datos.</p>';
+          };
+          $('#fx', v).onchange = async (ev) => {
+            archivo = ev.target.files[0]; ultimo = null; oe.checked = false; estado();
+            if (!archivo) { rv.innerHTML = ''; return; }
+            rv.innerHTML = '<div class="empty">Revisando «' + e(archivo.name) + '»…</div>';
+            try { ultimo = await api.post('/api/inventario/inicial/validar', { xlsx: await base64(archivo) }); pintar(ultimo); }
+            catch (er) { rv.innerHTML = '<div class="semaforo rojo"><span class="luz"></span><span>' + e(er.message) + '</span></div>'; }
+            estado();
+          };
+          bi.onclick = async () => {
+            bi.disabled = true; bi.textContent = 'Cargando…';
+            try {
+              const r = await api.post('/api/inventario/inicial/importar', { xlsx: await base64(archivo), omitir_errores: oe.checked });
+              ultimo = null; lo.hidden = true; bi.hidden = true;
+              rv.innerHTML = '<div class="semaforo verde"><span class="luz"></span><span><b>Inventario cargado.</b> ' + r.creados + ' producto' + (r.creados === 1 ? '' : 's') + ' nuevo' + (r.creados === 1 ? '' : 's') + ', ' + r.actualizados + ' actualizado' + (r.actualizados === 1 ? '' : 's') + ', ' + fm(r.existencia_cargada, r.existencia_cargada % 1 ? 2 : 0) + ' unidades por ' + usd(r.valor_usd) + (r.omitidas ? '. ' + r.omitidas + ' fila(s) con error quedaron sin cargar.' : '.') + '</span></div>'
+                + (r.errores.length ? '<div class="bad" style="margin-top:10px">' + r.errores.map(e).join('<br>') + '</div>' : '')
+                + '<p style="margin:12px 0 0">Revisa el resultado en <a href="#/inventario">Existencias</a> y en el kardex de cada producto.</p>';
+              A.ok('Inventario inicial cargado'); if (alTerminar) alTerminar();
+            } catch (er) { A.fail(er); estado(); }
+          };
+        } });
+  }
+
   // ======================= PRODUCTOS =======================
   A.vistas.productos = async (root) => {
     const [cats, provs] = await Promise.all([api.get('/api/categorias'), api.get('/api/proveedores?activo=1')]);
     root.innerHTML = `<div class="topbar"><h1 style="margin:0">Maestro de productos</h1><div class="chips">
-      ${A.can('productos.editar') ? '<button class="btn pri" data-a="nuevo">+ Nuevo producto</button><button class="btn" data-a="importar">Importar CSV</button><button class="btn" data-a="cats">Categorías</button>' : ''}<button class="btn" data-a="exportar">Exportar CSV</button></div></div>
+      ${A.can('productos.editar') ? '<button class="btn pri" data-a="nuevo">+ Nuevo producto</button><button class="btn" data-a="inicial">Inventario inicial (Excel)</button><button class="btn" data-a="importar">Importar CSV</button><button class="btn" data-a="cats">Categorías</button>' : ''}<button class="btn" data-a="exportar">Exportar CSV</button></div></div>
       <div class="card"><div class="row"><div class="grow"><label>Buscar (nombre, código o barras)</label><input id="q" autofocus></div>
       <div><label>Categoría</label><select id="c">${opts(cats, 'Todas').map(([k, l]) => `<option value="${k}">${e(l)}</option>`).join('')}</select></div>
       <div><label>Estado</label><select id="a"><option value="1">Activos</option><option value="0">Inactivos</option><option value="">Todos</option></select></div></div></div><div class="card" id="lst"></div>`;
@@ -44,6 +105,7 @@
     }
     A.acciones(root, {
       nuevo: () => editar(null),
+      inicial: () => asistenteInicial(() => cargar()),
       exportar: () => A.descargarCSV('productos.csv', [['codigo_interno', 'codigo_barra', 'nombre', 'categoria', 'stock', 'stock_minimo', 'costo_usd', 'precio_usd', 'estado'], ...rows.map((r) => [r.codigo, (r.barras || '').split(',')[0].trim(), r.nombre, r.categoria, r.stock, r.stock_min, r.costo_usd, r.precio_usd, r.activo ? 'activo' : 'inactivo'])]),
       cats: () => A.modal('Categorías', `<div id="cl"></div><form id="cf" class="row" style="margin-top:12px"><div class="grow"><label>Nueva categoría</label><input name="n" required></div><button class="btn pri">Agregar</button></form>`, { onMount: (v) => {
         const pintar = async () => { const c = await api.get('/api/categorias'); $('#cl', v).innerHTML = A.tabla([{ h: 'Categoría', f: (r) => e(r.nombre) }], c); };

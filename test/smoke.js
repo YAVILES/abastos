@@ -779,6 +779,75 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
   assert.equal(imp.errores.length, 0, JSON.stringify(imp));
   assert.equal(imp.creados + imp.actualizados, 3); assert.ok(imp.actualizados >= 2, 'los productos que ya existen por código se actualizan');
 
+  paso('inventario inicial desde Excel: plantilla, validación fila por fila y carga');
+  {
+    const IE = require('../inv_excel'), { crearXlsx } = require('../xlsx');
+    // la plantilla se descarga con las categorías y los proveedores de la empresa
+    const rp = await fetch(base + '/api/inventario/plantilla', { headers: { Authorization: 'Bearer ' + token } });
+    assert.equal(rp.status, 200); assert.match(rp.headers.get('content-type'), /spreadsheetml/); assert.match(rp.headers.get('content-disposition'), /inventario_inicial_.*\.xlsx/);
+    const plant = Buffer.from(await rp.arrayBuffer());
+    assert.equal(plant.subarray(0, 2).toString(), 'PK');
+    const lec = IE.filasDeExcel(plant); assert.equal(lec.hoja, 'Inventario'); assert.equal(lec.filas.length, 2, 'trae dos filas de ejemplo'); assert.equal(lec.ignoradas.length, 0);
+    assert.equal((await fetch(base + '/api/inventario/plantilla', { headers: { Authorization: 'Bearer ' + tokCajero } })).status, 403);
+    await falla(api('POST', '/api/inventario/inicial/validar', { xlsx: plant.toString('base64') }, tokCajero), 403);
+    // las filas de ejemplo no cuentan: una plantilla sin llenar no carga nada
+    const vacia = await ok(api('POST', '/api/inventario/inicial/validar', { xlsx: plant.toString('base64') }));
+    assert.equal(vacia.omitidas, 2); assert.equal(vacia.nuevos + vacia.actualizados, 0);
+
+    const enc = IE.COLUMNAS.map((c) => c.h), fila = (o) => IE.COLUMNAS.map((c) => (o[c.k] === undefined ? '' : o[c.k]));
+    const libro = (filas) => crearXlsx({ hojas: [{ nombre: 'Inventario', filas: [enc, ...filas.map(fila)] }] }).toString('base64');
+    const prod1 = await ok(api('GET', '/api/productos/' + p1)), prod2 = await ok(api('GET', '/api/productos/' + p2));
+    const antes = (await ok(api('GET', '/api/productos'))).length;
+    const stock1 = prod1.stock;
+    const arch = libro([
+      { nombre: 'Galletas María 200 g', codigo_barra: '7599000000011', codigo_interno: 'XL-001', categoria: 'Galletas importadas', costo_usd: 0.5, precio_venta_usd: 0.9, stock_actual: 40, proveedor_principal: 'Proveedor Excel' }, // fila 2: crea y carga existencia
+      { nombre: 'Chocolate barra 30 g', costo_usd: 0.4, margen_utilidad: 50, stock_actual: 10, precio_fijo: 'no' },                                                                                    // fila 3: precio por margen
+      { nombre: 'Jugo de naranja 1 L', costo_usd: '1,25', precio_venta_usd: '1,80', stock_actual: '12,5' },                                                                                       // fila 4: comas decimales
+      { nombre: 'Sin costo', precio_venta_usd: 1, stock_actual: 5 },                                                                                                                              // fila 5: error
+      { nombre: 'Existencia negativa', costo_usd: 1, precio_venta_usd: 2, stock_actual: -3 },                                                                                                     // fila 6: error
+      { nombre: 'Costo con letras', costo_usd: 'abc', precio_venta_usd: 2, stock_actual: 1 },                                                                                                     // fila 7: error
+      { nombre: 'Repetido', codigo_interno: 'XL-001', costo_usd: 1, precio_venta_usd: 2, stock_actual: 1 },                                                                                       // fila 8: código interno repetido en el archivo
+      { nombre: 'Códigos cruzados', codigo_interno: prod1.codigo, codigo_barra: prod2.codigos[0], costo_usd: 1, precio_venta_usd: 2, stock_actual: 1 },                                           // fila 9: interno de un producto y barras de otro
+      { nombre: prod1.nombre, codigo_interno: prod1.codigo, costo_usd: prod1.costo_usd, precio_venta_usd: prod1.precio_usd, stock_actual: 99 },                                                   // fila 10: ya tiene movimientos
+      { nombre: '(Ejemplo) Se ignora', costo_usd: 1, precio_venta_usd: 2, stock_actual: 1 }                                                                                                       // fila 11: ejemplo
+    ]);
+    const val = await ok(api('POST', '/api/inventario/inicial/validar', { xlsx: arch }));
+    assert.equal(val.nuevos, 3); assert.equal(val.actualizados, 1); assert.equal(val.omitidas, 1);
+    assert.deepEqual(val.errores.map((x) => x.fila), [5, 6, 7, 8, 9]);
+    assert.match(val.errores[0].mensaje, /costo/i); assert.match(val.errores[1].mensaje, /negativo/); assert.match(val.errores[2].mensaje, /número/); assert.match(val.errores[3].mensaje, /fila 2/); assert.match(val.errores[4].mensaje, /distintos/);
+    assert.ok(val.avisos.some((x) => x.fila === 10 && /ya tiene movimientos/.test(x.mensaje)), 'avisa que la existencia de un producto con movimientos no se toca');
+    assert.equal(val.unidades, 62.5); assert.equal(val.valor_usd, 39.63);
+    assert.deepEqual(val.categorias_nuevas, ['Galletas importadas']); assert.deepEqual(val.proveedores_nuevos, ['Proveedor Excel']);
+    assert.equal((await ok(api('GET', '/api/productos'))).length, antes, 'validar no escribe nada');
+
+    // con errores no se carga, salvo que se pida cargar solo las filas correctas
+    await falla(api('POST', '/api/inventario/inicial/importar', { xlsx: arch }), 409, /5 fila/);
+    assert.equal((await ok(api('GET', '/api/productos'))).length, antes);
+    const imp2 = await ok(api('POST', '/api/inventario/inicial/importar', { xlsx: arch, omitir_errores: true }));
+    assert.equal(imp2.creados, 3); assert.equal(imp2.actualizados, 1); assert.equal(imp2.existencia_cargada, 62.5); assert.equal(imp2.valor_usd, 39.63); assert.equal(imp2.omitidas, 5); assert.deepEqual(imp2.errores, []);
+    const gall = (await ok(api('GET', '/api/productos?q=Galletas%20Mar'))).find((x) => x.nombre === 'Galletas María 200 g');
+    assert.equal(gall.stock, 40); assert.equal(gall.categoria, 'Galletas importadas'); assert.equal(gall.codigo, 'XL-001'); assert.equal(gall.costo_usd, 0.5);
+    const kar = await ok(api('GET', `/api/productos/${gall.id}/kardex`));
+    assert.equal(kar.movimientos[0].tipo, 'inventario_inicial'); assert.equal(kar.movimientos[0].cantidad, 40); assert.equal(kar.valor_usd, 20);
+    const choc = (await ok(api('GET', '/api/productos?q=Chocolate%20barra'))).find((x) => x.nombre === 'Chocolate barra 30 g');
+    assert.equal(choc.precio_usd, 0.6, 'sin precio se calcula con el margen'); assert.equal(choc.stock, 10);
+    assert.equal((await ok(api('GET', '/api/productos?q=Jugo%20de%20naranja'))).find((x) => x.nombre === 'Jugo de naranja 1 L').stock, 12.5);
+    assert.equal((await ok(api('GET', '/api/productos/' + p1))).stock, stock1, 'la existencia de un producto con movimientos no cambia');
+    assert.ok((await ok(api('GET', '/api/categorias'))).some((c) => c.nombre === 'Galletas importadas'));
+    assert.ok((await ok(api('GET', '/api/proveedores'))).some((c) => c.nombre === 'Proveedor Excel'));
+    assert.ok((await ok(api('GET', '/api/auditoria?accion=excel'))).some((x) => x.accion === 'inventario_inicial_excel'), 'la carga queda en la bitácora');
+
+    // cargarlo otra vez no duplica nada: los productos ya existen y ya tienen su existencia
+    const otra = await ok(api('POST', '/api/inventario/inicial/importar', { xlsx: arch, omitir_errores: true }));
+    assert.equal(otra.creados, 0); assert.equal(otra.actualizados, 4); assert.equal(otra.existencia_cargada, 0);
+    assert.equal((await ok(api('GET', '/api/productos'))).length, antes + 3);
+    assert.equal((await ok(api('GET', `/api/productos/${gall.id}`))).stock, 40);
+    // archivos que no son Excel o no son la plantilla
+    await falla(api('POST', '/api/inventario/inicial/validar', { xlsx: Buffer.from('esto no es un excel '.repeat(20)).toString('base64') }), 400, /Excel/);
+    await falla(api('POST', '/api/inventario/inicial/validar', { xlsx: crearXlsx({ hojas: [{ nombre: 'Otra', filas: [['a', 'b'], [1, 2]] }] }).toString('base64') }), 400, /Inventario/);
+    await falla(api('POST', '/api/inventario/inicial/validar', {}), 400, /archivo/);
+  }
+
   paso('reconocimiento por imagen: sin credencial, con servicio simulado y límite mensual');
   const Rec = require('../reconocer');
   const imgOk = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';

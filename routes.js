@@ -5,6 +5,7 @@ const L = require('./lib');
 const P = require('./plataforma');
 const Rec = require('./reconocer');
 const F = require('./finanzas');
+const IE = require('./inv_excel');
 const { err, r2, r4 } = L;
 
 // ---------- permisos ----------
@@ -615,6 +616,159 @@ staff('POST', '/api/productos/importar', 'productos.editar', ({ body, user }) =>
     } catch (e) { res.errores.push(`Fila ${i + 2}: ${e.message}`); }
   });
   L.audit(user.usuario, 'productos_importados', 'producto', null, { creados: res.creados, actualizados: res.actualizados, errores: res.errores.length });
+  return res;
+});
+
+// ---- inventario inicial desde Excel ----
+// Se revisa todo el archivo sin tocar nada (validar) y solo después se carga (importar). Las filas con error no se cargan.
+const sinAcento = (t) => String(t == null ? '' : t).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+function numCelda(t, etiqueta) {
+  let x = String(t == null ? '' : t).replace(/[$\s]/g, '');
+  if (x === '') return null;
+  if (x.includes(',') && x.includes('.')) x = x.lastIndexOf(',') > x.lastIndexOf('.') ? x.replace(/\./g, '').replace(',', '.') : x.replace(/,/g, '');
+  else if (x.includes(',')) x = x.replace(',', '.');
+  const n = Number(x);
+  if (!Number.isFinite(n)) throw new Error('«' + etiqueta + '» debe ser un número y dice «' + t + '»');
+  if (n < 0) throw new Error('«' + etiqueta + '» no puede ser negativo');
+  return n;
+}
+function siNoCelda(t) {
+  const x = sinAcento(t);
+  if (x === '') return null;
+  if (['si', 's', '1', 'true', 'x', 'yes', 'y'].includes(x)) return 1;
+  if (['no', 'n', '0', 'false'].includes(x)) return 0;
+  throw new Error('«Precio fijo» debe ser sí o no y dice «' + t + '»');
+}
+function analizarInventarioExcel(filas, perms) {
+  const lim = P.licencia(D.slugActual()).max_productos;
+  let total = D.get('SELECT COUNT(*) AS n FROM productos').n;
+  const R = { items: [], errores: [], avisos: [], omitidas: 0, unidades: 0, valor_usd: 0, categorias_nuevas: [], proveedores_nuevos: [] };
+  const internos = new Map(), barras = new Map(), tocados = new Map();
+  const nuevasCat = new Set(), nuevosProv = new Set();
+  for (const { fila, v } of filas) {
+    if (/^\(ejemplo\)/i.test(v.nombre || '')) { R.omitidas++; continue; }
+    const aviso = (m) => R.avisos.push({ fila, mensaje: m });
+    try {
+      const nombre = String(v.nombre || '').trim();
+      if (!nombre) throw new Error('Falta el nombre del producto');
+      const interno = String(v.codigo_interno || '').trim(), barra = String(v.codigo_barra || '').replace(/\s+/g, '');
+      if (interno && internos.has(interno.toLowerCase())) throw new Error('El código interno ' + interno + ' ya está en la fila ' + internos.get(interno.toLowerCase()));
+      if (barra && barras.has(barra)) throw new Error('El código de barras ' + barra + ' ya está en la fila ' + barras.get(barra));
+      const exI = interno ? D.get('SELECT * FROM productos WHERE codigo=?', interno) : null;
+      const exB = barra ? D.get('SELECT p.* FROM productos p JOIN codigos_barra b ON b.producto_id=p.id WHERE b.codigo=?', barra) : null;
+      if (exI && exB && exI.id !== exB.id) throw new Error('El código interno ' + interno + ' y el código de barras ' + barra + ' son de productos distintos («' + exI.nombre + '» y «' + exB.nombre + '»)');
+      let ex = exI || exB || null;
+      if (!ex && !interno && !barra) { // sin ningún código: se reconoce por el nombre exacto para no duplicar el producto al volver a cargar el archivo
+        const mismos = D.all('SELECT * FROM productos WHERE lower(nombre)=lower(?)', nombre);
+        if (mismos.length > 1) throw new Error('Hay ' + mismos.length + ' productos llamados «' + nombre + '»: pon el código interno o el de barras para saber cuál es');
+        if (mismos.length === 1) { ex = mismos[0]; aviso('Ya existe «' + nombre + '» y la fila no trae código: se actualiza ese producto'); }
+      }
+      if (ex && tocados.has(ex.id)) throw new Error('El producto «' + ex.nombre + '» ya aparece en la fila ' + tocados.get(ex.id));
+      const costo = numCelda(v.costo_usd, 'Costo'), precio = numCelda(v.precio_venta_usd, 'Precio de venta'), margen = numCelda(v.margen_utilidad, 'Margen');
+      const factor = numCelda(v.factor_conversion, 'Unidades por unidad de compra'), smin = numCelda(v.stock_minimo, 'Stock mínimo'), smax = numCelda(v.stock_maximo, 'Stock máximo');
+      const stock = numCelda(v.stock_actual, 'Existencia inicial'), fijo = siNoCelda(v.precio_fijo);
+      if (factor !== null && factor <= 0) throw new Error('«Unidades por unidad de compra» debe ser mayor a 0');
+      const dat = { nombre };
+      if (v.marca) dat.marca = v.marca; if (v.presentacion) dat.presentacion = v.presentacion; if (v.unidad_compra) dat.unidad_compra = v.unidad_compra; if (v.unidad_venta) dat.unidad_venta = v.unidad_venta;
+      if (factor !== null) dat.factor = factor; if (smin !== null) dat.stock_min = smin; if (smax !== null) dat.stock_max = smax; if (v.ubicacion) dat.ubicacion = v.ubicacion;
+      if (costo !== null) dat.costo_usd = costo; if (margen !== null) dat.margen = margen; if (fijo !== null) dat.precio_fijo = fijo;
+      if (precio !== null) dat.precio_usd = precio;
+      let carga = 0, accion;
+      if (!ex) {
+        if (costo === null) throw new Error('Falta el costo por unidad');
+        if (precio === null && margen === null) throw new Error('Falta el precio de venta (o el margen para calcularlo)');
+        if (precio === null) { dat.precio_usd = L.precioPorMargen(costo, margen); dat.precio_fijo = dat.precio_fijo ?? 1; }
+        if (stock === null) aviso('Sin existencia inicial: el producto se crea con existencia 0');
+        carga = stock || 0;
+        if (carga > 0 && !(costo > 0)) throw new Error('Con existencia hace falta un costo mayor a 0 para valorizar el inventario');
+        total++; if (total > lim) throw new Error('Supera el límite de ' + lim + ' productos de tu plan');
+        accion = 'crear';
+      } else {
+        accion = 'actualizar';
+        const d = datosProducto({ ...dat }, ex);
+        if ((d.precio !== ex.precio_usd || d.costo !== ex.costo_usd || d.margen !== ex.margen || d.fijo !== ex.precio_fijo) && !perms.has('precio.cambiar')) throw new Error('No tienes permiso para cambiar precios, costos o márgenes de productos que ya existen');
+        if (stock > 0) {
+          if (D.get('SELECT 1 AS x FROM inventario_movimientos WHERE producto_id=?', ex.id)) aviso('«' + ex.nombre + '» ya tiene movimientos de inventario: se actualizan sus datos pero no se vuelve a cargar su existencia');
+          else if (!(d.costo > 0)) throw new Error('Con existencia hace falta un costo mayor a 0 para valorizar el inventario');
+          else carga = stock;
+        }
+      }
+      if (accion === 'crear') datosProducto({ ...dat });
+      const precioFinal = dat.precio_usd ?? ex?.precio_usd, costoFinal = dat.costo_usd ?? ex?.costo_usd;
+      if (precioFinal != null && costoFinal != null && precioFinal < costoFinal) aviso('El precio de venta (' + precioFinal + ') es menor al costo (' + costoFinal + ')');
+      const cat = String(v.categoria || '').trim(), prov = String(v.proveedor_principal || '').trim();
+      if (cat && !D.get('SELECT 1 AS x FROM categorias WHERE lower(nombre)=lower(?)', cat)) nuevasCat.add(cat);
+      if (prov && !D.get('SELECT 1 AS x FROM proveedores WHERE lower(nombre)=lower(?)', prov)) nuevosProv.add(prov);
+      if (interno) internos.set(interno.toLowerCase(), fila); if (barra) barras.set(barra, fila); if (ex) tocados.set(ex.id, fila);
+      R.unidades += carga; R.valor_usd += carga * (costoFinal || 0);
+      R.items.push({ fila, accion, nombre, ex, dat, cat, prov, barra, interno, carga, costo: costoFinal || 0, precio: precioFinal ?? 0 });
+    } catch (e) { R.errores.push({ fila, mensaje: e.message }); }
+  }
+  R.categorias_nuevas = [...nuevasCat]; R.proveedores_nuevos = [...nuevosProv];
+  R.valor_usd = Math.round(R.valor_usd * 100) / 100; R.unidades = Math.round(R.unidades * 1000) / 1000;
+  return R;
+}
+function resumenInventarioExcel(R, lectura) {
+  return {
+    hoja: lectura.hoja, filas_leidas: lectura.filas.length, omitidas: R.omitidas, ignoradas: lectura.ignoradas,
+    nuevos: R.items.filter((i) => i.accion === 'crear').length, actualizados: R.items.filter((i) => i.accion === 'actualizar').length,
+    con_error: R.errores.length, unidades: R.unidades, valor_usd: R.valor_usd,
+    categorias_nuevas: R.categorias_nuevas, proveedores_nuevos: R.proveedores_nuevos,
+    errores: R.errores, avisos: R.avisos,
+    vista: R.items.slice(0, 15).map((i) => ({ fila: i.fila, nombre: i.nombre, accion: i.accion, existencia: i.carga, costo: i.costo, precio: i.precio, valor: Math.round(i.carga * i.costo * 100) / 100 }))
+  };
+}
+function leerExcelDeBody(body) {
+  const b64 = String(body.xlsx || '');
+  if (!b64) err(400, 'No llegó ningún archivo');
+  const buf = Buffer.from(b64, 'base64');
+  if (buf.length < 200) err(400, 'El archivo está vacío o no es un Excel válido');
+  try { return IE.filasDeExcel(buf); } catch (e) { err(400, e.message); }
+}
+staff('GET', '/api/inventario/plantilla', 'productos.editar', () => ({
+  __archivo: IE.plantilla({ empresa: (D.param('empresa') || {}).nombre || '', categorias: D.all('SELECT nombre FROM categorias WHERE activo=1 ORDER BY nombre').map((c) => c.nombre), proveedores: D.all('SELECT nombre FROM proveedores WHERE activo=1 ORDER BY nombre').map((p) => p.nombre) }),
+  tipo: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', nombre: 'inventario_inicial_' + D.slugActual() + '.xlsx'
+}));
+staff('POST', '/api/inventario/inicial/validar', 'productos.editar', ({ body, perms }) => {
+  const lectura = leerExcelDeBody(body);
+  if (!lectura.filas.length) err(400, 'La hoja «Inventario» no tiene productos. Llena al menos una fila.');
+  return resumenInventarioExcel(analizarInventarioExcel(lectura.filas, perms), lectura);
+});
+staff('POST', '/api/inventario/inicial/importar', 'productos.editar', ({ body, user, perms }) => {
+  const lectura = leerExcelDeBody(body);
+  const R = analizarInventarioExcel(lectura.filas, perms);
+  if (R.errores.length && !body.omitir_errores) err(409, 'Hay ' + R.errores.length + ' fila(s) con error. Corrígelas o elige cargar solo las filas correctas.');
+  if (!R.items.length) err(400, 'No hay filas válidas para cargar');
+  const res = { creados: 0, actualizados: 0, existencia_cargada: 0, valor_usd: 0, omitidas: R.errores.length, errores: [] };
+  for (const it of R.items) {
+    try {
+      D.tx(() => {
+        const dat = { ...it.dat };
+        if (it.cat) dat.categoria_id = (D.get('SELECT id FROM categorias WHERE lower(nombre)=lower(?)', it.cat) || { id: D.insert('INSERT INTO categorias(nombre) VALUES(?)', it.cat) }).id;
+        if (it.prov) dat.proveedor_id = (D.get('SELECT id FROM proveedores WHERE lower(nombre)=lower(?)', it.prov) || { id: D.insert('INSERT INTO proveedores(nombre) VALUES(?)', it.prov) }).id;
+        const d = datosProducto(dat, it.ex || undefined);
+        let id;
+        if (it.accion === 'crear') {
+          limiteProductos();
+          const codigo = it.interno || D.siguiente('producto', 'PROD', 4);
+          id = D.insert('INSERT INTO productos(codigo,nombre,categoria_id,marca,presentacion,unidad_compra,unidad_venta,factor,costo_usd,precio_usd,margen,precio_fijo,stock_min,stock_max,ubicacion,proveedor_id,creado) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            codigo, d.nombre, d.categoria_id, d.marca, d.presentacion, d.uc, d.uv, d.factor, d.costo, d.precio, d.margen, d.fijo, d.smin, d.smax, d.ubicacion, d.proveedor_id, D.ahora());
+          if (it.barra) guardarBarras(id, [it.barra]);
+          res.creados++;
+        } else {
+          id = it.ex.id;
+          D.run('UPDATE productos SET nombre=?,categoria_id=?,marca=?,presentacion=?,unidad_compra=?,unidad_venta=?,factor=?,costo_usd=?,precio_usd=?,margen=?,precio_fijo=?,stock_min=?,stock_max=?,ubicacion=?,proveedor_id=? WHERE id=?',
+            d.nombre, d.categoria_id, d.marca, d.presentacion, d.uc, d.uv, d.factor, d.costo, d.precio, d.margen, d.fijo, d.smin, d.smax, d.ubicacion, d.proveedor_id, id);
+          if (it.barra && !D.get('SELECT 1 AS x FROM codigos_barra WHERE codigo=?', it.barra)) D.run('INSERT INTO codigos_barra(codigo,producto_id,principal) VALUES(?,?,0)', it.barra, id);
+          if (d.costo !== it.ex.costo_usd && !(it.carga > 0)) L.mov(id, 'revalorizacion', 0, d.costo, 'Cambio de costo por carga desde Excel', 'producto', id, user.usuario, null);
+          res.actualizados++;
+        }
+        if (it.carga > 0) { L.mov(id, 'inventario_inicial', it.carga, d.costo, 'Inventario inicial (Excel)', 'producto', id, user.usuario, null); res.existencia_cargada += it.carga; res.valor_usd += it.carga * d.costo; }
+      });
+    } catch (e) { res.errores.push('Fila ' + it.fila + ': ' + e.message); }
+  }
+  res.valor_usd = Math.round(res.valor_usd * 100) / 100; res.existencia_cargada = Math.round(res.existencia_cargada * 1000) / 1000;
+  L.audit(user.usuario, 'inventario_inicial_excel', 'producto', null, { creados: res.creados, actualizados: res.actualizados, unidades: res.existencia_cargada, valor_usd: res.valor_usd, omitidas: res.omitidas });
   return res;
 });
 
