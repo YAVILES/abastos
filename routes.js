@@ -6,6 +6,7 @@ const P = require('./plataforma');
 const Rec = require('./reconocer');
 const F = require('./finanzas');
 const IE = require('./inv_excel');
+const BCV = require('./bcv');
 const { err, r2, r4 } = L;
 
 // ---------- permisos ----------
@@ -244,10 +245,10 @@ staff('PUT', '/api/usuarios/:id', 'usuarios.editar', ({ params, body, user }) =>
 // =====================================================================
 // PARÁMETROS, CUENTAS, CAJAS, MEDIOS DE PAGO APP
 // =====================================================================
-staff('GET', '/api/parametros', null, () => ({ empresa: D.param('empresa'), abc: D.param('abc'), operacion: D.param('operacion'), lector: D.param('lector') }));
+staff('GET', '/api/parametros', null, () => ({ empresa: D.param('empresa'), abc: D.param('abc'), operacion: D.param('operacion'), lector: D.param('lector'), tasas: D.param('tasas') }));
 staff('PUT', '/api/parametros/:clave', 'parametros.editar', ({ params, body, user }) => {
   const clave = params.clave;
-  if (!['empresa', 'abc', 'operacion', 'lector'].includes(clave)) err(404, 'Parámetro desconocido');
+  if (!['empresa', 'abc', 'operacion', 'lector', 'tasas'].includes(clave)) err(404, 'Parámetro desconocido');
   const antes = D.param(clave);
   const nuevo = { ...antes };
   for (const k of Object.keys(antes)) if (body[k] !== undefined) nuevo[k] = typeof antes[k] === 'number' ? num(body[k], `Valor inválido en ${k}`, 0) : typeof antes[k] === 'boolean' ? !!body[k] : String(body[k]);
@@ -360,8 +361,12 @@ staff('GET', '/api/jornada', null, () => ({ jornada: L.jornadaAbierta(), ultima:
 staff('GET', '/api/jornadas', 'jornada.gestionar', () => D.all('SELECT * FROM jornadas ORDER BY id DESC LIMIT 60'));
 staff('POST', '/api/jornada/abrir', 'jornada.gestionar', ({ body, user }) => D.tx(() => {
   if (L.jornadaAbierta()) err(409, 'Ya hay un día operativo abierto');
-  const { ves, eur } = leerTasas(body);
   const fecha = D.hoy();
+  const th = D.get('SELECT * FROM tasas_cambio WHERE fecha=?', fecha);
+  const sinTasa = (body.tasa_usd_ves == null || body.tasa_usd_ves === '') && (body.tasa_eur_ves == null || body.tasa_eur_ves === '') && body.tasa_eur_usd == null;
+  if (sinTasa && !th) err(400, 'Aún no hay tasa de hoy. Escríbela, o usa «Traer del BCV» si la actualización automática no la ha cargado.');
+  const { ves, eur } = sinTasa ? { ves: th.tasa_usd_ves, eur: th.tasa_eur_usd } : leerTasas(body);
+  if (sinTasa) body = { ...body, fuente: body.fuente || th.fuente };
   const id = D.insert(`INSERT INTO jornadas(fecha,estado,tasa_usd_ves,tasa_eur_usd,fuente,obs,usuario_apertura,abierta_en) VALUES(?,?,?,?,?,?,?,?)`,
     fecha, 'abierta', ves, eur, s(body.fuente) || 'BCV', s(body.obs), user.usuario, D.ahora());
   guardarTasaFecha(fecha, ves, eur, s(body.fuente) || 'BCV', user.usuario);
@@ -406,7 +411,13 @@ staff('GET', '/api/tasas', null, ({ query }) => {
   const faltan = [];
   if (primera) for (let d = primera; d < hoy && faltan.length < 60; d = D.sumarDias(1, d)) if (!todas.has(d)) faltan.push(d);
   return { hoy, tasa_hoy: D.get('SELECT * FROM tasas_cambio WHERE fecha=?', hoy) || null, ultima: D.get('SELECT * FROM tasas_cambio WHERE fecha<=? ORDER BY fecha DESC LIMIT 1', hoy) || null,
-    jornada_fecha: j ? j.fecha : null, desactualizada: !!(j && j.fecha < hoy), lista, fechas_sin_tasa: faltan };
+    jornada_fecha: j ? j.fecha : null, desactualizada: !!(j && j.fecha < hoy), lista, fechas_sin_tasa: faltan, auto_bcv: D.param('tasas').auto_bcv, bcv: BCV.estado() };
+});
+staff('POST', '/api/tasas/bcv', 'jornada.gestionar', async ({ user }) => {
+  let datos;
+  try { datos = await BCV.consultar({ forzar: true }); } catch (e) { err(502, 'No se pudo consultar al BCV: ' + e.message); }
+  const r = BCV.aplicar(datos, { forzar: true, usuario: user.usuario });
+  return { ...r, bcv: datos };
 });
 staff('GET', '/api/jornada/tasas-log', 'jornada.gestionar', () => D.all('SELECT * FROM tasas_log ORDER BY id DESC LIMIT 100'));
 staff('GET', '/api/jornada/pre-cierre', 'jornada.gestionar', () => preCierre());
@@ -494,12 +505,17 @@ function datosProducto(b, previo) {
   const nombre = req(b.nombre ?? previo?.nombre, 'Indica el nombre del producto');
   const costo = b.costo_usd != null ? num(b.costo_usd, 'Costo inválido', 0) : (previo?.costo_usd ?? 0);
   const margen = b.margen != null ? num(b.margen, 'Margen inválido', 0) : (previo?.margen ?? op.margen_defecto);
+  if (margen >= 100) err(400, 'El margen debe ser menor a 100 %: es la parte del precio de venta que queda como ganancia');
   const fijo = b.precio_fijo != null ? bool(b.precio_fijo) : (previo?.precio_fijo ?? 1);
   let precio = b.precio_usd != null ? num(b.precio_usd, 'Precio inválido', 0) : (previo?.precio_usd ?? 0);
   if (!fijo) precio = L.precioPorMargen(costo, margen);
   const factor = b.factor != null ? num(b.factor, 'El factor de conversión debe ser mayor a 0', 0.0001) : (previo?.factor ?? 1);
+  // Precio al mayor: por unidad de compra (caja, bulto…). 0 = no se vende al mayor.
+  const mayor = b.precio_mayor_usd != null && b.precio_mayor_usd !== '' ? num(b.precio_mayor_usd, 'Precio al mayor inválido', 0) : (previo?.precio_mayor_usd ?? 0);
+  if (mayor > 0 && !(factor > 1)) err(400, 'Para vender al mayor indica cuántas unidades trae la unidad de compra (más de 1)');
+  if (mayor > 0 && precio > 0 && mayor > precio * factor + 0.005) err(400, `El precio al mayor (${mayor}) no puede superar ${r2(precio * factor)}: es el precio al detal de ${factor} unidades`);
   return {
-    nombre, costo, margen, fijo, precio, factor,
+    nombre, costo, margen, fijo, precio, factor, mayor,
     categoria_id: b.categoria_id !== undefined ? (b.categoria_id || null) : (previo?.categoria_id ?? null),
     marca: b.marca !== undefined ? s(b.marca) : (previo?.marca ?? null), presentacion: b.presentacion !== undefined ? s(b.presentacion) : (previo?.presentacion ?? null),
     uc: s(b.unidad_compra) || previo?.unidad_compra || 'unidad', uv: s(b.unidad_venta) || previo?.unidad_venta || 'unidad',
@@ -519,8 +535,8 @@ staff('POST', '/api/productos', 'productos.editar', ({ body, user }) => D.tx(() 
   let codigo = s(body.codigo);
   if (!codigo) codigo = D.siguiente('producto', 'PROD', 4);
   if (D.get('SELECT id FROM productos WHERE codigo=?', codigo)) err(409, 'El código interno ya existe');
-  const id = D.insert(`INSERT INTO productos(codigo,nombre,categoria_id,marca,presentacion,unidad_compra,unidad_venta,factor,costo_usd,precio_usd,margen,precio_fijo,stock_min,stock_max,ubicacion,proveedor_id,imagen,creado)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, codigo, d.nombre, d.categoria_id, d.marca, d.presentacion, d.uc, d.uv, d.factor, d.costo, d.precio, d.margen, d.fijo, d.smin, d.smax, d.ubicacion, d.proveedor_id, d.imagen, D.ahora());
+  const id = D.insert(`INSERT INTO productos(codigo,nombre,categoria_id,marca,presentacion,unidad_compra,unidad_venta,factor,costo_usd,precio_usd,precio_mayor_usd,margen,precio_fijo,stock_min,stock_max,ubicacion,proveedor_id,imagen,creado)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, codigo, d.nombre, d.categoria_id, d.marca, d.presentacion, d.uc, d.uv, d.factor, d.costo, d.precio, d.mayor, d.margen, d.fijo, d.smin, d.smax, d.ubicacion, d.proveedor_id, d.imagen, D.ahora());
   guardarBarras(id, body.codigos || (body.codigo_barra ? [body.codigo_barra] : []));
   const ini = Number(body.stock_inicial) || 0;
   if (ini > 0) L.mov(id, 'inventario_inicial', ini, d.costo, 'Inventario inicial', 'producto', id, user.usuario, L.jornadaAbierta()?.id);
@@ -531,14 +547,14 @@ staff('PUT', '/api/productos/:id', 'productos.editar', ({ params, body, user, pe
   const p = D.get('SELECT * FROM productos WHERE id=?', params.id);
   if (!p) err(404, 'Producto no encontrado');
   const d = datosProducto(body, p);
-  const cambiaPrecio = d.precio !== p.precio_usd || d.costo !== p.costo_usd || d.margen !== p.margen || d.fijo !== p.precio_fijo;
+  const cambiaPrecio = d.precio !== p.precio_usd || d.costo !== p.costo_usd || d.margen !== p.margen || d.fijo !== p.precio_fijo || d.mayor !== p.precio_mayor_usd;
   if (cambiaPrecio && !perms.has('precio.cambiar')) err(403, 'No tienes permiso para cambiar precios, costos o márgenes');
-  D.run(`UPDATE productos SET nombre=?,categoria_id=?,marca=?,presentacion=?,unidad_compra=?,unidad_venta=?,factor=?,costo_usd=?,precio_usd=?,margen=?,precio_fijo=?,stock_min=?,stock_max=?,ubicacion=?,proveedor_id=?,imagen=?,activo=? WHERE id=?`,
-    d.nombre, d.categoria_id, d.marca, d.presentacion, d.uc, d.uv, d.factor, d.costo, d.precio, d.margen, d.fijo, d.smin, d.smax, d.ubicacion, d.proveedor_id, d.imagen, body.activo == null ? p.activo : bool(body.activo), p.id);
+  D.run(`UPDATE productos SET nombre=?,categoria_id=?,marca=?,presentacion=?,unidad_compra=?,unidad_venta=?,factor=?,costo_usd=?,precio_usd=?,precio_mayor_usd=?,margen=?,precio_fijo=?,stock_min=?,stock_max=?,ubicacion=?,proveedor_id=?,imagen=?,activo=? WHERE id=?`,
+    d.nombre, d.categoria_id, d.marca, d.presentacion, d.uc, d.uv, d.factor, d.costo, d.precio, d.mayor, d.margen, d.fijo, d.smin, d.smax, d.ubicacion, d.proveedor_id, d.imagen, body.activo == null ? p.activo : bool(body.activo), p.id);
   if (body.codigos) guardarBarras(p.id, body.codigos);
   // un cambio manual del costo queda en el kardex como revalorización: el saldo pasa a valer al costo nuevo
   if (d.costo !== p.costo_usd) L.mov(p.id, 'revalorizacion', 0, d.costo, 'Cambio manual del costo', 'producto', p.id, user.usuario, L.jornadaAbierta()?.id);
-  if (cambiaPrecio) L.audit(user.usuario, 'cambio_precio_costo', 'producto', p.id, { antes: { costo: p.costo_usd, precio: p.precio_usd, margen: p.margen }, despues: { costo: d.costo, precio: d.precio, margen: d.margen } });
+  if (cambiaPrecio) L.audit(user.usuario, 'cambio_precio_costo', 'producto', p.id, { antes: { costo: p.costo_usd, precio: p.precio_usd, mayor: p.precio_mayor_usd, margen: p.margen }, despues: { costo: d.costo, precio: d.precio, mayor: d.mayor, margen: d.margen } });
   return { ok: true };
 }));
 // Kardex valorizado al costo promedio: cada fila trae el costo con el que se valoró el movimiento y el saldo (existencia, costo promedio y valor) que dejó
@@ -668,6 +684,7 @@ function analizarInventarioExcel(filas, perms) {
       const factor = numCelda(v.factor_conversion, 'Unidades por unidad de compra'), smin = numCelda(v.stock_minimo, 'Stock mínimo'), smax = numCelda(v.stock_maximo, 'Stock máximo');
       const stock = numCelda(v.stock_actual, 'Existencia inicial'), fijo = siNoCelda(v.precio_fijo);
       if (factor !== null && factor <= 0) throw new Error('«Unidades por unidad de compra» debe ser mayor a 0');
+      if (margen !== null && margen >= 100) throw new Error('El margen debe ser menor a 100 %');
       const dat = { nombre };
       if (v.marca) dat.marca = v.marca; if (v.presentacion) dat.presentacion = v.presentacion; if (v.unidad_compra) dat.unidad_compra = v.unidad_compra; if (v.unidad_venta) dat.unidad_venta = v.unidad_venta;
       if (factor !== null) dat.factor = factor; if (smin !== null) dat.stock_min = smin; if (smax !== null) dat.stock_max = smax; if (v.ubicacion) dat.ubicacion = v.ubicacion;
@@ -1134,20 +1151,24 @@ function crearPedido(o) {
   for (const it of o.items) {
     const p = D.get('SELECT * FROM productos WHERE id=?', it.producto_id);
     if (!p || !p.activo) err(400, 'Hay un producto que ya no está disponible');
-    const cant = num(it.cantidad, `Cantidad inválida para "${p.nombre}"`, 0.0001);
+    const mayor = it.unidad === 'mayor';
+    const cantU = num(it.cantidad, `Cantidad inválida para "${p.nombre}"`, 0.0001);
+    if (mayor && (!(p.factor > 1) || !(p.precio_mayor_usd > 0))) err(400, `"${p.nombre}" no se vende al mayor`);
+    if (mayor && !Number.isInteger(cantU)) err(400, `Al mayor "${p.nombre}" se pide por ${p.unidad_compra} completa`);
     if (!(p.precio_usd > 0)) err(400, `"${p.nombre}" no está a la venta`);
+    const cant = mayor ? cantU * p.factor : cantU;
     agr.set(p.id, (agr.get(p.id) || 0) + cant);
-    lineas.push({ p, cant });
+    lineas.push({ p, cant, mayor, cantU, precioU: mayor ? p.precio_mayor_usd : p.precio_usd });
   }
   for (const [id, cant] of agr) {
     const disp = L.disponible(id);
     if (cant > disp + 1e-9) { const p = D.get('SELECT nombre FROM productos WHERE id=?', id); err(409, `Stock insuficiente de "${p.nombre}": disponible ${Math.max(0, r2(disp))}`); }
   }
-  const total = r2(lineas.reduce((a, l) => a + l.cant * l.p.precio_usd, 0));
+  const total = r2(lineas.reduce((a, l) => a + l.cantU * l.precioU, 0));
   const expira = D.sumarMinutos(op.reserva_minutos);
   const id = D.insert(`INSERT INTO pedidos(numero,cliente_id,origen,estado,entrega,contacto,telefono,zona,direccion,referencia_entrega,nota,total_usd,creado,expira,vendedor)
                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, D.siguiente('pedido', 'P'), o.cliente_id, o.origen || 'app', 'pendiente', entrega, s(o.contacto), s(o.telefono), s(o.zona), s(o.direccion), s(o.referencia_entrega), s(o.nota), total, D.ahora(), expira, o.vendedor || null);
-  for (const l of lineas) D.insert('INSERT INTO pedido_detalles(pedido_id,producto_id,cantidad,precio_usd) VALUES(?,?,?,?)', id, l.p.id, l.cant, l.p.precio_usd);
+  for (const l of lineas) D.insert('INSERT INTO pedido_detalles(pedido_id,producto_id,cantidad,precio_usd,unidad,cant_unidad,precio_unidad) VALUES(?,?,?,?,?,?,?)', id, l.p.id, l.cant, l.mayor ? l.precioU / l.p.factor : l.p.precio_usd, l.mayor ? 'mayor' : null, l.mayor ? l.cantU : null, l.mayor ? l.precioU : null);
   for (const [pid, cant] of agr) D.insert('INSERT INTO reservas(pedido_id,producto_id,cantidad,expira) VALUES(?,?,?,?)', id, pid, cant, expira);
   return { id, total_usd: total, expira };
 }
@@ -1192,7 +1213,7 @@ staff('POST', '/api/pedidos/:id/validar-pago', 'pedidos.gestionar', ({ params, b
   const m = D.get('SELECT * FROM medios_pago_app WHERE id=?', pr.medio_app_id);
   const turno = L.turnoAbiertoDe(user.id);
   const monto = body.monto_confirmado != null ? num(body.monto_confirmado, 'Monto inválido', 0.01) : (pr.paga_con || pr.monto);
-  const items = D.all('SELECT producto_id, cantidad, precio_usd FROM pedido_detalles WHERE pedido_id=?', p.id);
+  const items = D.all('SELECT producto_id, cantidad, precio_usd, unidad, cant_unidad, precio_unidad FROM pedido_detalles WHERE pedido_id=?', p.id).map((d) => d.unidad === 'mayor' ? { producto_id: d.producto_id, unidad: 'mayor', cantidad: d.cant_unidad, precio_usd: d.precio_unidad } : { producto_id: d.producto_id, cantidad: d.cantidad, precio_usd: d.precio_usd });
   // efectivo recibido de más: el vuelto se entrega en la misma moneda del billete
   let vuelto;
   if (m.medio === 'efectivo') {
@@ -1686,11 +1707,11 @@ pub('GET', '/api/app/catalogo', ({ query }) => {
   const w = ['p.activo=1', 'p.precio_usd>0'], a = [];
   if (query.q) { w.push('(p.nombre LIKE ? OR p.marca LIKE ? OR EXISTS(SELECT 1 FROM codigos_barra b WHERE b.producto_id=p.id AND b.codigo=?))'); a.push(like(query.q), like(query.q), String(query.q).trim()); }
   if (query.categoria_id) { w.push('p.categoria_id=?'); a.push(Number(query.categoria_id)); }
-  const rows = D.all(`SELECT p.id,p.nombre,p.marca,p.presentacion,p.unidad_venta,p.precio_usd,p.imagen,p.categoria_id,c.nombre AS categoria,
+  const rows = D.all(`SELECT p.id,p.nombre,p.marca,p.presentacion,p.unidad_venta,p.precio_usd,p.precio_mayor_usd,p.factor,p.unidad_compra,p.imagen,p.categoria_id,c.nombre AS categoria,
       COALESCE((SELECT SUM(cantidad) FROM inventario_movimientos m WHERE m.producto_id=p.id),0) AS stock FROM productos p LEFT JOIN categorias c ON c.id=p.categoria_id
       WHERE ${w.join(' AND ')} ORDER BY p.nombre LIMIT 400`, ...a);
   return { categorias: D.all("SELECT id,nombre FROM categorias WHERE activo=1 ORDER BY nombre"),
-    productos: rows.map((p) => { const disp = Math.max(0, r2(p.stock - L.reservadoDe(p.id))); const { stock, ...x } = p; return { ...x, disponible: disp }; }).filter((p) => p.disponible > 0 || query.todos) };
+    productos: rows.map((p) => { const disp = Math.max(0, r2(p.stock - L.reservadoDe(p.id))); const { stock, precio_mayor_usd, factor, unidad_compra, ...x } = p; const mayor = precio_mayor_usd > 0 && factor > 1 ? { precio_usd: precio_mayor_usd, factor, unidad: unidad_compra || 'caja', disponible: Math.floor(disp / factor + 1e-9) } : null; return { ...x, disponible: disp, mayor }; }).filter((p) => p.disponible > 0 || query.todos) };
 });
 pub('GET', '/api/app/medios-pago', () => D.all("SELECT id,medio,banco,tipo_doc,documento,telefono,titular,num_cuenta,tipo_cuenta,moneda,observacion FROM medios_pago_app WHERE estado='publicado' ORDER BY medio, banco"));
 cli('GET', '/api/app/perfil', ({ cliente }) => sanitizarCliente(cliente));

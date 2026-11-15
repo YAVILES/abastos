@@ -232,9 +232,15 @@
           : `Todavía no hay tasa registrada para hoy (${e(t.hoy)}).${t.ultima ? ' La última es la del ' + e(t.ultima.fecha) + '.' : ''}`;
         const faltan = t.fechas_sin_tasa.length
           ? `<div class="check ojo" style="margin-bottom:10px"><span class="pt"></span><div style="flex:1">Fechas sin tasa registrada (días sin operar o sin cargar): ${t.fechas_sin_tasa.slice(-14).map(e).join(', ')}${t.fechas_sin_tasa.length > 14 ? '…' : ''}</div></div>` : '';
+        const b = t.bcv || {}, hace = b.ultima_consulta ? new Date(b.ultima_consulta).toLocaleString('es-VE', { dateStyle: 'short', timeStyle: 'short' }) : null;
+        const panelBcv = `<div class="check ${b.error ? 'ojo' : 'ok'}" style="margin:10px 0"><span class="pt"></span><div style="flex:1">
+          <label style="display:flex;gap:8px;align-items:center;margin:0"><input type="checkbox" id="auto-bcv" ${t.auto_bcv ? 'checked' : ''} ${edit ? '' : 'disabled'} style="width:18px;height:18px"> <b>Actualizar la tasa sola con el BCV</b></label>
+          <div class="muted" style="margin-top:4px">${t.auto_bcv ? 'El sistema lee la tasa oficial en bcv.org.ve al arrancar y cada 30 minutos, y la registra en su fecha valor. No pisa las tasas que escribas a mano.' : 'Apagada: las tasas se escriben a mano.'}
+          ${b.bcv ? ` Última lectura${hace ? ' (' + e(hace) + ')' : ''}: Bs ${A.fm(b.bcv.usd, 4)} por $ y Bs ${A.fm(b.bcv.eur, 4)} por €${b.bcv.fechaValor ? ', fecha valor ' + e(b.bcv.fechaValor) : ''}.` : ' Aún no se ha leído el BCV desde que se encendió el servidor.'}
+          ${b.error ? `<span class="bad"> No se pudo consultar al BCV: ${e(b.error)}. Se mantiene la última tasa registrada.</span>` : ''}</div></div>${edit ? '<button class="btn" data-a="bcv">Traer del BCV ahora</button>' : ''}</div>`;
         out.innerHTML = `<div class="card"><div class="topbar"><div><h2 style="margin:0">Tasas de cambio por fecha</h2><p class="muted" style="margin:4px 0 0">Cada fecha tiene su propia tasa. Al abrir el día se registra la de hoy; aquí puedes ver el historial, cargar la de una fecha (por ejemplo mañana) o corregir una con su motivo. Las ventas ya hechas conservan la tasa con la que se registraron.</p></div>${edit ? '<button class="btn pri" data-a="nueva">+ Registrar tasa de una fecha</button>' : ''}</div>
           <div class="check ${t.tasa_hoy ? 'ok' : 'mal'}" style="margin:10px 0"><span class="pt"></span><div style="flex:1">${estadoHoy}${t.desactualizada ? ' El día operativo abierto es del ' + e(t.jornada_fecha) + '.' : ''}</div></div>
-          ${faltan}
+          ${panelBcv}${faltan}
           ${A.tabla([{ h: 'Fecha', f: (x) => e(x.fecha) + (x.fecha === t.hoy ? ' <span class="tag ok">hoy</span>' : '') }, { h: 'Bs por 1 $', n: 1, f: (x) => A.fm(x.tasa_usd_ves, 4) }, { h: 'Bs por 1 €', n: 1, f: (x) => A.fm(eurVes(x), 4) }, { h: 'Fuente', f: (x) => e(x.fuente || '') },
             { h: 'Registró', f: (x) => e(x.usuario || '') + (x.actualizada_en ? '<div class="muted" style="font-size:11px">corregida ' + e(x.actualizada_en.slice(0, 16)) + '</div>' : '') }, { h: '', f: (x, i) => (edit ? `<button class="btn sm" data-a="ed" data-i="${i}">Corregir</button>` : '') }], t.lista, { vacio: 'Aún no hay tasas registradas' })}</div>`;
         const form = (x) => A.form(x ? 'Corregir la tasa del ' + x.fecha : 'Registrar tasa de una fecha', [
@@ -242,7 +248,10 @@
           { n: 'fuente', l: 'Fuente' }, { n: 'motivo', l: 'Motivo (obligatorio si la fecha ya tiene tasa o es anterior a hoy)', full: true }],
           x ? { fecha: x.fecha, tasa_usd_ves: x.tasa_usd_ves, tasa_eur_ves: eurVes(x), fuente: x.fuente } : { fecha: t.hoy, fuente: 'BCV' },
           async (v) => { const r = await api.post('/api/tasas', v); A.ok(r.actualiza_el_dia_abierto ? 'Tasa registrada y aplicada al día abierto' : 'Tasa registrada'); await A.refrescarEstado(); P.tasas(); });
-        A.acciones(out, { nueva: () => form(null), ed: (el) => form(t.lista[+el.dataset.i]) });
+        const ch = out.querySelector('#auto-bcv');
+        if (ch) ch.onchange = async () => { try { await api.put('/api/parametros/tasas', { auto_bcv: ch.checked }); A.ok(ch.checked ? 'Actualización automática encendida' : 'Actualización automática apagada'); P.tasas(); } catch (er) { ch.checked = !ch.checked; A.fail(er); } };
+        A.acciones(out, { nueva: () => form(null), ed: (el) => form(t.lista[+el.dataset.i]),
+          bcv: async () => { try { const r = await api.post('/api/tasas/bcv', {}); A.ok(r.aplicada ? `Tasa del ${r.fecha} actualizada: Bs ${A.fm(r.usd, 4)} por $` : (r.sinCambio ? 'Ya estaba al día con el BCV' : r.motivo)); await A.refrescarEstado(); P.tasas(); } catch (er) { A.fail(er); } } });
       },
       async roles() {
         const rr = await api.get('/api/roles');

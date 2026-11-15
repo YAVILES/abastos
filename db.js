@@ -38,6 +38,7 @@ function abrir(slug) {
     ['ordenes_entrega', 'asignado_en TEXT'], ['ordenes_entrega', 'salida_en TEXT'], ['ordenes_entrega', 'retirado_en TEXT'], ['ordenes_entrega', 'rechazado_en TEXT'], ['ordenes_entrega', 'motivo_rechazo TEXT'], ['ordenes_entrega', 'entregado_en TEXT'], ['ordenes_entrega', 'receptor TEXT'], ['ordenes_entrega', 'nota_entrega TEXT'], ['conteos', 'arrastre_antes TEXT'], ['compras', 'enviada_en TEXT'], ['compras', 'enviada_por TEXT'], ['compras', 'envio_medio TEXT'], ['compras', 'envio_nota TEXT'], ['compras', 'factura TEXT'], ['compras', 'factura_fecha TEXT'],
     ['compras', 'recepcion_nota TEXT'], ['compras', 'recibida_por TEXT'], ['compras', 'con_diferencias INTEGER NOT NULL DEFAULT 0'], ['compras', 'total_pedido REAL'],
     ['compra_detalles', 'cantidad_pedida REAL'], ['compra_detalles', 'costo_pedido REAL'], ['inventario_movimientos', 'saldo_cant REAL'], ['inventario_movimientos', 'saldo_valor REAL'], ['inventario_movimientos', 'costo_prom REAL'], ['pagos_reportados', 'paga_con REAL'], ['proveedores', 'plazo_entrega INTEGER NOT NULL DEFAULT 3'],
+    ['productos', 'precio_mayor_usd REAL NOT NULL DEFAULT 0'], ['venta_detalles', 'unidad TEXT'], ['venta_detalles', 'cant_unidad REAL'], ['pedido_detalles', 'unidad TEXT'], ['pedido_detalles', 'cant_unidad REAL'], ['pedido_detalles', 'precio_unidad REAL'],
     ['pedidos', 'calificacion INTEGER'], ['pedidos', 'calificacion_nota TEXT'], ['pedidos', 'calificado_en TEXT']]) {
     if (!db.prepare(`PRAGMA table_info(${tabla})`).all().some((c) => c.name === def.split(' ')[0])) db.exec(`ALTER TABLE ${tabla} ADD COLUMN ${def}`);
   }
@@ -45,6 +46,12 @@ function abrir(slug) {
   for (const c of db.prepare('SELECT id, telefono FROM clientes WHERE telefono IS NOT NULL').all()) {
     const n = normalizarTelefono(c.telefono);
     if (n && n !== c.telefono && !db.prepare('SELECT 1 FROM clientes WHERE telefono=? AND id<>?').get(n, c.id)) db.prepare('UPDATE clientes SET telefono=? WHERE id=?').run(n, c.id);
+  }
+  // El margen pasó de ser sobre el costo a ser sobre el precio de venta: los productos con precio calculado conservan su precio.
+  if (!db.prepare("SELECT 1 FROM parametros WHERE clave='margen_sobre_precio'").get()) {
+    for (const p of db.prepare('SELECT id, margen FROM productos WHERE precio_fijo=0 AND margen>0').all())
+      db.prepare('UPDATE productos SET margen=? WHERE id=?').run(Math.round(p.margen / (100 + p.margen) * 1e6) / 1e4, p.id);
+    db.prepare("INSERT INTO parametros(clave,valor) VALUES('margen_sobre_precio','1')").run();
   }
   db.exec("UPDATE pedidos SET expira=NULL WHERE expira IS NOT NULL AND estado NOT IN ('pendiente','pago_reportado')");
   // Lo pedido en las órdenes anteriores queda igual a lo que ya se había registrado
@@ -134,7 +141,7 @@ CREATE TABLE IF NOT EXISTS productos (
   id INTEGER PRIMARY KEY, codigo TEXT NOT NULL UNIQUE, nombre TEXT NOT NULL,
   categoria_id INTEGER REFERENCES categorias(id), marca TEXT, presentacion TEXT,
   unidad_compra TEXT NOT NULL DEFAULT 'unidad', unidad_venta TEXT NOT NULL DEFAULT 'unidad',
-  factor REAL NOT NULL DEFAULT 1, costo_usd REAL NOT NULL DEFAULT 0, precio_usd REAL NOT NULL DEFAULT 0,
+  factor REAL NOT NULL DEFAULT 1, costo_usd REAL NOT NULL DEFAULT 0, precio_usd REAL NOT NULL DEFAULT 0, precio_mayor_usd REAL NOT NULL DEFAULT 0,
   margen REAL NOT NULL DEFAULT 30, precio_fijo INTEGER NOT NULL DEFAULT 1,
   stock_min REAL NOT NULL DEFAULT 0, stock_max REAL NOT NULL DEFAULT 0, ubicacion TEXT,
   proveedor_id INTEGER REFERENCES proveedores(id), imagen TEXT,
@@ -350,6 +357,7 @@ const DEFAULTS = {
   abc: { metodo: 'ABC', criterio: 'valor', pctA: 50, pctB: 30, pctC: 20, vueltasA: 12, vueltasB: 6, vueltasC: 2, dias_operativos: 300 },
   // Lector de códigos: 'teclado' (USB/Bluetooth que escribe como teclado), 'serial' (puerto COM virtual) o 'camara'
   lector: { tipo: 'teclado', sufijo: 'Enter', prefijo: '', largo_min: 6, ms_entre_teclas: 60, captura_global: true, sonido: true, validar_digito: false, baudios: 9600 },
+  tasas: { auto_bcv: true },
   operacion: { reserva_minutos: 30, reserva_extension_minutos: 240, descuento_max_pct: 5, margen_defecto: 30, stock_negativo: false, compra_ciclo_dias: 7, compra_cobertura_max_dias: 45, venta_requiere_cliente: true }
 };
 function param(clave) {

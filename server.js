@@ -171,6 +171,7 @@ function tareasMinuto() {
 if (require.main === module) {
   const avisos = P.iniciar();
   setInterval(tareasMinuto, 60000);
+  require('./bcv').iniciar();   // tasa del BCV: al arrancar y cada 30 minutos
   const respaldar = () => { try { const n = respaldarTodo(); if (n) console.log(`Respaldo diario: ${n} copia(s) nuevas`); } catch (e) { console.error('Respaldo', e.message); } };
   setTimeout(respaldar, 20000); setInterval(respaldar, 6 * 3600000);
   servidor.listen(PORT, '0.0.0.0', () => {

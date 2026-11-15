@@ -16,7 +16,7 @@
         <form id="fa" class="row"><div><label>Tasa USD/Bs (Bs por 1 USD)</label><input name="tasa_usd_ves" type="number" step="any" min="0" value="${e(u.tasa_usd_ves || '')}" required></div>
         <div><label>Tasa EUR (Bs por 1 €)</label><input name="tasa_eur_ves" type="number" step="any" min="0" value="${u.tasa_eur_usd ? Math.round(u.tasa_eur_usd * u.tasa_usd_ves * 100) / 100 : ''}" required></div>
         <div><label>Fuente</label><input name="fuente" value="BCV"></div><div class="grow"><label>Observación</label><input name="obs"></div>
-        ${A.can('jornada.gestionar') ? '<button class="btn pri">Abrir día</button>' : '<span class="muted">Un supervisor debe abrir el día.</span>'}</form></div>`;
+        ${A.can('jornada.gestionar') ? '<button class="btn pri">Abrir día</button><button type="button" class="btn" id="bcv">Traer del BCV</button>' : '<span class="muted">Un supervisor debe abrir el día.</span>'}</form></div>`;
     }
     const bars = d.ultimos_dias, mx = Math.max(1, ...bars.map((b) => b.total));
     root.innerHTML = `<h1>Inicio</h1>${abrir}
@@ -39,6 +39,20 @@
         <div class="card"><h2>Saldos de bancos y cajas</h2>${A.tabla([{ h: 'Cuenta', f: (r) => e(r.nombre) }, { h: 'Saldo', n: 1, f: (r) => mon(r.saldo, r.moneda) }], d.cuentas)}</div>
       </div>`;
     const fa = $('#fa', root);
+    const bb = $('#bcv', root);
+    if (bb) bb.onclick = async () => {
+      bb.disabled = true;
+      try {
+        const r = await api.post('/api/tasas/bcv', {});
+        // Se rellena el formulario con lo que publica el BCV; la persona confirma con «Abrir día».
+        fa.tasa_usd_ves.value = Math.round(r.bcv.usd * 10000) / 10000;
+        fa.tasa_eur_ves.value = Math.round(r.bcv.eur * 10000) / 10000;
+        fa.fuente.value = 'BCV';
+        const futura = r.bcv.fechaValor && r.bcv.fechaValor > A.hoy();
+        A.ok(`BCV: Bs ${fm(r.bcv.usd, 2)} por $ y Bs ${fm(r.bcv.eur, 2)} por €` + (futura ? `. Es la tasa con fecha valor ${r.bcv.fechaValor}; revísala y pulsa «Abrir día».` : '. Pulsa «Abrir día».'));
+      } catch (er) { A.fail(er); }
+      bb.disabled = false;
+    };
     if (fa) fa.onsubmit = async (ev) => {
       ev.preventDefault();
       try { await api.post('/api/jornada/abrir', { tasa_usd_ves: +fa.tasa_usd_ves.value, tasa_eur_ves: +fa.tasa_eur_ves.value, fuente: fa.fuente.value, obs: fa.obs.value }); A.ok('Día abierto'); await A.refrescarEstado(); A.render(); }
@@ -106,7 +120,8 @@
     function pintarVenta() {
       const t = totales();
       $('#carrito', root).innerHTML = st.items.length ? A.tabla([
-        { h: 'Producto', f: (r) => `<b>${e(r.nombre)}</b><div class="muted" style="font-size:11px">${e(r.codigo)} · disp. ${fm(r.disponible, 0)}</div>` },
+        { h: 'Producto', f: (r) => `<b>${e(r.nombre)}</b><div class="muted" style="font-size:11px">${e(r.codigo)} · disp. ${r.mayor ? fm(Math.floor(r.disponible / r.factor + 1e-9), 0) + ' ' + e(r.uc || 'cajas') : fm(r.disponible, 0)}</div>` },
+        { h: 'Unidad', f: (r, i) => r.p_mayor > 0 && r.factor > 1 ? `<select data-uni="${i}"><option value="d">${e(r.uv || 'Unidad')} (detal)</option><option value="m" ${r.mayor ? 'selected' : ''}>${e(r.uc || 'Caja')} ×${fm(r.factor, 0)} (mayor)</option></select>` : `<span class="muted">${e(r.uv || 'unidad')}</span>` },
         { h: 'Precio', n: 1, f: (r, i) => A.can('precio.cambiar') ? `<input data-precio="${i}" type="number" step="any" value="${r.precio}" style="width:80px;text-align:right">` : usd(r.precio) },
         { h: 'Cant.', f: (r, i) => `<span class="qty"><button class="btn sm" data-a="menos" data-i="${i}">−</button><input data-cant="${i}" type="number" step="any" min="0" value="${r.cantidad}"><button class="btn sm" data-a="mas" data-i="${i}">+</button></span>` },
         { h: 'Subtotal', n: 1, f: (r) => usd(r.cantidad * r.precio) }, { h: '', f: (r, i) => `<button class="btn sm" data-a="quitar" data-i="${i}">✕</button>` }], st.items) : '<div class="empty">Carrito vacío. Escanea o busca un producto.</div>';
@@ -167,8 +182,8 @@
     function agregar(p) {
       if (st.pedido) return A.toast('Estás atendiendo un pedido de delivery: suéltalo para vender otra cosa', 'bad');
       if (requiere && !st.cliente) { identificar().then((c) => { if (c) agregar(p); else A.toast('Identifica al cliente para iniciar la venta', 'bad'); }); return; }
-      const ex = st.items.find((i) => i.id === p.id);
-      if (ex) ex.cantidad += 1; else st.items.push({ id: p.id, nombre: p.nombre, codigo: p.codigo, precio: p.precio_usd, cantidad: 1, disponible: p.disponible });
+      const ex = st.items.find((i) => i.id === p.id && !i.mayor);
+      if (ex) ex.cantidad += 1; else st.items.push({ id: p.id, nombre: p.nombre, codigo: p.codigo, precio: p.precio_usd, cantidad: 1, disponible: p.disponible, mayor: false, p_detal: p.precio_usd, p_mayor: p.precio_mayor_usd || 0, factor: p.factor || 1, uc: p.unidad_compra, uv: p.unidad_venta });
       if (!(p.precio_usd > 0)) A.toast(`"${p.nombre}" no tiene precio de venta`, 'bad');
       pintar();
     }
@@ -177,7 +192,7 @@
       if (!t) { res.hidden = true; return; }
       st.res = (await api.get('/api/productos' + A.qs({ q: t, activo: 1 }))).slice(0, 12); st.sel = 0;
       res.hidden = !st.res.length;
-      res.innerHTML = st.res.map((p, i) => `<div data-a="elegir" data-i="${i}" class="${i === st.sel ? 'sel' : ''}"><span>${e(p.nombre)} <span class="muted">${e(p.presentacion || '')}</span></span><span><b>${usd(p.precio_usd)}</b> <span class="muted">disp. ${fm(p.disponible, 0)}</span></span></div>`).join('');
+      res.innerHTML = st.res.map((p, i) => `<div data-a="elegir" data-i="${i}" class="${i === st.sel ? 'sel' : ''}"><span>${e(p.nombre)} <span class="muted">${e(p.presentacion || '')}</span></span><span><b>${usd(p.precio_usd)}</b>${p.precio_mayor_usd > 0 && p.factor > 1 ? ` <span class="muted">· mayor ${usd(p.precio_mayor_usd)}</span>` : ''} <span class="muted">disp. ${fm(p.disponible, 0)}</span></span></div>`).join('');
     }
     q.addEventListener('input', A.debounce(() => buscar().catch(A.fail), 180));
     q.addEventListener('keydown', async (ev) => {
@@ -194,7 +209,14 @@
     });
     root.addEventListener('change', (ev) => {
       const t = ev.target;
-      if (t.dataset.cant != null) { const v = parseFloat(t.value); if (v > 0) st.items[+t.dataset.cant].cantidad = v; pintar(); }
+      if (t.dataset.uni != null) {
+        const it = st.items[+t.dataset.uni];
+        it.mayor = t.value === 'm';
+        it.precio = it.mayor ? it.p_mayor : it.p_detal;
+        if (it.mayor) it.cantidad = Math.max(1, Math.round(it.cantidad));
+        pintar(); return;
+      }
+      if (t.dataset.cant != null) { const it = st.items[+t.dataset.cant]; let v = parseFloat(t.value); if (it.mayor) v = Math.round(v); if (v > 0) it.cantidad = v; pintar(); }
       if (t.dataset.precio != null) { const v = parseFloat(t.value); if (v >= 0) st.items[+t.dataset.precio].precio = v; pintar(); }
       if (t.id === 'pct') { st.pct = Math.min(100, Math.max(0, parseFloat(t.value) || 0)); pintar(); }
     });
@@ -330,7 +352,7 @@
         if (!st.cliente) { /* sin cliente: crédito se bloquea en servidor */ }
         bs.onclick = async () => {
           bs.disabled = true;
-          const body_ = { cliente_id: st.cliente ? st.cliente.id : null, descuento_pct: st.pct, items: st.items.map((i) => ({ producto_id: i.id, cantidad: i.cantidad, precio_usd: i.precio })),
+          const body_ = { cliente_id: st.cliente ? st.cliente.id : null, descuento_pct: st.pct, items: st.items.map((i) => ({ producto_id: i.id, cantidad: i.cantidad, precio_usd: i.precio, unidad: i.mayor ? 'mayor' : undefined })),
             pagos: lin.map((l) => l.medio === 'credito' ? { medio: 'credito' } : { medio: l.medio, moneda: l.moneda, monto: +l.monto, referencia: l.referencia, cuenta_id: l.cuenta_id ? +l.cuenta_id : undefined }) };
           if (hayVuelto() && vl.length) body_.vuelto = vl.map((l) => ({ medio: l.medio, moneda: l.moneda, monto: +l.monto, referencia: l.referencia, cuenta_id: l.cuenta_id ? +l.cuenta_id : undefined }));
           try {

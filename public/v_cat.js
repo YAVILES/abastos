@@ -80,19 +80,20 @@
       $('#lst', root).innerHTML = `<p class="muted">${rows.length} productos</p>` + A.tabla([
         { h: 'Código', f: (r) => e(r.codigo) }, { h: 'Producto', f: (r) => `<b>${e(r.nombre)}</b><div class="muted" style="font-size:11px">${e(r.barras || 'sin código de barras')}</div>` }, { h: 'Categoría', f: (r) => e(r.categoria || '') },
         { h: 'Stock', n: 1, f: (r) => `<span class="${r.stock_min > 0 && r.stock <= r.stock_min ? 'bad' : ''}">${fm(r.stock, 0)}</span>` }, { h: 'Mín', n: 1, f: (r) => fm(r.stock_min, 0) },
-        { h: 'Costo', n: 1, f: (r) => usd(r.costo_usd) }, { h: 'Precio', n: 1, f: (r) => usd(r.precio_usd) }, { h: 'Margen', n: 1, f: (r) => r.costo_usd > 0 && r.precio_usd > 0 ? fm((r.precio_usd - r.costo_usd) / r.costo_usd * 100, 1) + '%' : '—' },
+        { h: 'Costo', n: 1, f: (r) => usd(r.costo_usd) }, { h: 'Precio', n: 1, f: (r) => usd(r.precio_usd) }, { h: 'Margen', n: 1, f: (r) => r.costo_usd > 0 && r.precio_usd > 0 ? fm((r.precio_usd - r.costo_usd) / r.precio_usd * 100, 1) + '%' : '—' },
         { h: '', f: (r) => (r.activo ? '' : A.tag('inactivo', 'bad')) + (r.precio_fijo ? '' : ' ' + A.tag('margen', 'info')) }], rows, { clic: true });
       $('#lst', root).querySelectorAll('tr.click').forEach((tr) => tr.onclick = () => A.can('productos.editar') && editar(rows[+tr.dataset.i].id));
     }
     async function editar(id) {
-      const p = id ? await api.get('/api/productos/' + id) : { activo: 1, precio_fijo: 1, factor: 1, margen: 30, unidad_compra: 'unidad', unidad_venta: 'unidad', codigos: [] };
+      const p = id ? await api.get('/api/productos/' + id) : { activo: 1, precio_fijo: 1, factor: 1, precio_mayor_usd: 0, margen: 30, unidad_compra: 'unidad', unidad_venta: 'unidad', codigos: [] };
       const cp = A.can('precio.cambiar') || !id;
       const campos = [
         { n: 'nombre', l: 'Nombre', req: true, full: true }, { n: 'codigo', l: 'Código interno', ph: 'Automático si se deja vacío', ro: !!id }, { n: 'categoria_id', l: 'Categoría', t: 'select', o: opts(cats) },
         { n: 'marca', l: 'Marca' }, { n: 'presentacion', l: 'Presentación', ph: 'Ej. 1 kg' }, { n: 'unidad_compra', l: 'Unidad de compra', ph: 'caja, bulto…' }, { n: 'unidad_venta', l: 'Unidad de venta', ph: 'unidad, kg…' },
         { n: 'factor', l: 'Unidades de venta por unidad de compra', t: 'number', min: 0.0001, ayuda: 'Ej. 1 caja = 24 unidades' }, { n: 'proveedor_id', l: 'Proveedor principal', t: 'select', o: opts(provs) },
         { n: 'costo_usd', l: 'Costo (USD por unidad de venta)', t: 'number', min: 0, ro: !cp }, { n: 'precio_fijo', l: 'Precio fijo (sin recalcular por margen)', t: 'checkbox' },
-        { n: 'margen', l: 'Margen sobre costo %', t: 'number', min: 0, ro: !cp }, { n: 'precio_usd', l: 'Precio de venta USD', t: 'number', min: 0, ro: !cp, ayuda: 'Si no es precio fijo se calcula del costo y el margen.' },
+        { n: 'margen', l: 'Margen sobre el precio de venta %', t: 'number', min: 0, max: 99.99, ro: !cp }, { n: 'precio_usd', l: 'Precio al detal USD (por unidad de venta)', t: 'number', min: 0, ro: !cp, ayuda: 'Si no es precio fijo se calcula así: costo ÷ (1 − margen). Ej. costo 5,90 y margen 30 % = 8,43.' },
+        { n: 'precio_mayor_usd', l: 'Precio al mayor USD (por unidad de compra)', t: 'number', min: 0, ro: !cp, ayuda: 'Lo que vale la caja o el bulto completo. Déjalo en 0 si no vendes al mayor; requiere más de 1 unidad por unidad de compra.' },
         { n: 'stock_min', l: 'Stock mínimo', t: 'number', min: 0 }, { n: 'stock_max', l: 'Stock máximo', t: 'number', min: 0 }, { n: 'ubicacion', l: 'Ubicación', ph: 'Pasillo 1' },
         id ? { n: 'activo', l: 'Activo', t: 'checkbox' } : { n: 'stock_inicial', l: 'Existencia inicial', t: 'number', min: 0 },
         { n: 'codigos_txt', l: 'Códigos de barras (uno por línea; el primero es el principal)', t: 'textarea', full: true }];

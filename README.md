@@ -111,3 +111,21 @@ servicio simulado, aislamiento entre empresas, límites de plan, licencias y res
 - Factura fiscal: fuera del alcance de la etapa 1, según lo acordado. Los recibos son comprobantes internos.
 - No hay envío de notificaciones al cliente (WhatsApp, correo).
 - Pasar a varias máquinas o a alta disponibilidad exigiría cambiar SQLite por otra base.
+
+## Tasa del BCV automática
+
+`bcv.js` lee la tasa oficial (USD y EUR) de la portada de bcv.org.ve al arrancar el servidor y cada 30 minutos, y la registra en cada empresa en su fecha valor. Reglas:
+
+- No reemplaza una tasa escrita a mano; solo corrige las que puso él (fuente «BCV (automática)»).
+- Un día abierto solo cambia de tasa si se vendía con la automática anterior.
+- Descarta lecturas que se alejen más de 30 % de la última tasa reciente.
+- Se apaga por empresa en Parámetros › Tasas de cambio. Ahí mismo, y al abrir el día, el botón «Traer del BCV» fuerza la lectura.
+- Si el BCV no responde, se conserva la última tasa y la pantalla muestra el error.
+
+## Venta al detal y al mayor
+
+Cada producto tiene dos presentaciones con un solo inventario: la **unidad de venta** (detal, ej. botella) y la **unidad de compra** (mayor, ej. caja de 12). En Productos se llenan «Unidades de venta por unidad de compra» y «Precio al mayor» (0 = no se vende al mayor; no puede superar el precio al detal × unidades de la caja).
+
+- En el punto de venta cada línea tiene un selector Detal / Mayor; al mayor se vende por cajas completas.
+- En la app de clientes el catálogo muestra la caja bajo el precio normal y el cliente la pide aparte.
+- El inventario, el kardex y la utilidad siguen en unidades de venta: 2 cajas de 12 descuentan 24 botellas. La venta guarda también las cajas (`cant_unidad`).

@@ -78,9 +78,14 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
   const prov = (await ok(api('POST', '/api/proveedores', { nombre: 'Distribuidora Sur', dias_credito: 15 }))).id;
   const cats = await ok(api('GET', '/api/categorias'));
   const p1 = (await ok(api('POST', '/api/productos', { nombre: 'Harina de maíz 1kg', categoria_id: cats[0].id, codigos: ['7590000000011'], costo_usd: 0.95, precio_usd: 1.3, stock_min: 12, stock_max: 60, proveedor_id: prov, factor: 20, unidad_compra: 'caja' }))).id;
-  const p2 = (await ok(api('POST', '/api/productos', { nombre: 'Arroz 1kg', categoria_id: cats[1].id, codigos: ['7590000000028'], costo_usd: 0.9, precio_fijo: 0, margen: 40, stock_min: 5, stock_max: 30, proveedor_id: prov }))).id;
+  const p2 = (await ok(api('POST', '/api/productos', { nombre: 'Arroz 1kg', categoria_id: cats[1].id, codigos: ['7590000000028'], costo_usd: 0.9, precio_fijo: 0, margen: 28.5714, stock_min: 5, stock_max: 30, proveedor_id: prov }))).id;
   await falla(api('POST', '/api/productos', { nombre: 'Dup', codigos: ['7590000000011'] }), 409, /ya pertenece/);
   assert.equal((await ok(api('GET', '/api/productos/' + p2))).precio_usd, 1.26, 'precio por margen');
+  // el margen es sobre el precio de venta: costo 5,90 con 30 % = 8,43; un margen de 100 % o más no existe
+  const pmg = await ok(api('POST', '/api/productos', { nombre: 'Prueba margen', costo_usd: 5.9, precio_fijo: 0, margen: 30 }));
+  assert.equal((await ok(api('GET', '/api/productos/' + pmg.id))).precio_usd, 8.43);
+  await falla(api('POST', '/api/productos', { nombre: 'Margen imposible', costo_usd: 5.9, precio_fijo: 0, margen: 100 }), 400, /menor a 100/);
+  await ok(api('PUT', '/api/productos/' + pmg.id, { activo: 0 }));
 
   paso('compra a contado en Bs: stock, costo promedio y salida de banco');
   const banco = (await ok(api('GET', '/api/cuentas'))).find((c) => c.tipo === 'banco');
@@ -756,6 +761,50 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
     assert.ok(Array.isArray(R2.serie) && R2.categorias.length && R2.productos_top.length);
   }
 
+  paso('venta al detal y al mayor: dos unidades de venta, un solo inventario');
+  {
+    const base1 = { nombre: 'Aceite 1L (prueba mayor)', costo_usd: 0.8, precio_usd: 1.5, factor: 12, unidad_compra: 'caja', unidad_venta: 'botella', stock_inicial: 60 };
+    await falla(api('POST', '/api/productos', { ...base1, nombre: 'Mayor caro', precio_mayor_usd: 20 }), 400, /no puede superar 18/);
+    await falla(api('POST', '/api/productos', { ...base1, nombre: 'Mayor sin caja', factor: 1, precio_mayor_usd: 1 }), 400, /más de 1/);
+    const pm = (await ok(api('POST', '/api/productos', { ...base1, precio_mayor_usd: 15 }))).id;
+    assert.equal((await ok(api('GET', '/api/productos/' + pm))).precio_mayor_usd, 15);
+    const pago = (monto) => [{ medio: 'efectivo', moneda: 'USD', monto }];
+    // 2 cajas al mayor = 30 USD y salen 24 botellas del mismo inventario
+    const vm = await ok(api('POST', '/api/ventas', { items: [{ producto_id: pm, cantidad: 2, unidad: 'mayor' }], pagos: pago(30) }));
+    assert.equal(vm.total_usd, 30);
+    let det = await ok(api('GET', '/api/ventas/' + vm.id));
+    assert.equal(det.items[0].cantidad, 24); assert.equal(det.items[0].cant_unidad, 2); assert.equal(det.items[0].unidad, 'mayor');
+    assert.equal(Math.round(det.items[0].cantidad * det.items[0].precio_usd * 100) / 100, 30);
+    assert.equal((await ok(api('GET', '/api/productos/' + pm))).stock, 36);
+    // una caja y tres botellas en la misma venta: 15 + 4,50
+    const vx = await ok(api('POST', '/api/ventas', { items: [{ producto_id: pm, cantidad: 1, unidad: 'mayor' }, { producto_id: pm, cantidad: 3 }], pagos: pago(19.5) }));
+    assert.equal(vx.total_usd, 19.5);
+    assert.equal((await ok(api('GET', '/api/productos/' + pm))).stock, 21);
+    // validaciones
+    await falla(api('POST', '/api/ventas', { items: [{ producto_id: pm, cantidad: 1.5, unidad: 'mayor' }], pagos: pago(30) }), 400, /completa/);
+    await falla(api('POST', '/api/ventas', { items: [{ producto_id: pm, cantidad: 5, unidad: 'mayor' }], pagos: pago(75) }), 409, /Stock insuficiente/);
+    await falla(api('POST', '/api/ventas', { items: [{ producto_id: p2, cantidad: 1, unidad: 'mayor' }], pagos: pago(5) }), 400, /precio al mayor/);
+    await falla(api('POST', '/api/ventas', { items: [{ producto_id: pm, cantidad: 1, unidad: 'mayor', precio_usd: 10 }], pagos: pago(10) }, tokCajero), 409); // sin caja abierta antes que el precio
+    // la anulación devuelve las botellas, no las cajas
+    await ok(api('POST', `/api/ventas/${vm.id}/anular`, { motivo: 'prueba mayor' }));
+    await ok(api('POST', `/api/ventas/${vx.id}/anular`, { motivo: 'prueba mayor' }));
+    assert.equal((await ok(api('GET', '/api/productos/' + pm))).stock, 60);
+    // app de clientes: el catálogo ofrece la caja y el pedido reserva sus botellas
+    const cat = await ok(api('GET', '/api/app/catalogo?q=Aceite', null, ct));
+    const pc = cat.productos.find((x) => x.id === pm);
+    assert.deepEqual(pc.mayor, { precio_usd: 15, factor: 12, unidad: 'caja', disponible: 5 });
+    assert.equal(pc.precio_mayor_usd, undefined);
+    await falla(api('POST', '/api/app/pedidos', { items: [{ producto_id: pm, cantidad: 6, unidad: 'mayor' }] }, ct), 409, /Stock insuficiente/);
+    const pe = await ok(api('POST', '/api/app/pedidos', { items: [{ producto_id: pm, cantidad: 2, unidad: 'mayor' }, { producto_id: pm, cantidad: 4 }] }, ct));
+    assert.equal(pe.total_usd, 36);
+    const ped2 = await ok(api('GET', '/api/app/pedidos/' + pe.id, null, ct));
+    assert.deepEqual(ped2.items.map((i) => [i.cantidad, i.unidad || null, i.cant_unidad || null]), [[24, 'mayor', 2], [4, null, null]]);
+    assert.equal((await ok(api('GET', '/api/productos/' + pm))).reservado, 28);
+    await ok(api('POST', `/api/app/pedidos/${pe.id}/cancelar`, {}, ct));
+    assert.equal((await ok(api('GET', '/api/productos/' + pm))).reservado, 0);
+    await ok(api('PUT', '/api/productos/' + pm, { activo: 0 }));
+  }
+
   paso('cierre de caja con diferencia exige comentario; cierre del día');
   const t = await ok(api('GET', '/api/turno'));
   await falla(api('POST', '/api/jornada/cerrar', {}), 409, /cajas abiertas/);
@@ -830,7 +879,7 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
     const kar = await ok(api('GET', `/api/productos/${gall.id}/kardex`));
     assert.equal(kar.movimientos[0].tipo, 'inventario_inicial'); assert.equal(kar.movimientos[0].cantidad, 40); assert.equal(kar.valor_usd, 20);
     const choc = (await ok(api('GET', '/api/productos?q=Chocolate%20barra'))).find((x) => x.nombre === 'Chocolate barra 30 g');
-    assert.equal(choc.precio_usd, 0.6, 'sin precio se calcula con el margen'); assert.equal(choc.stock, 10);
+    assert.equal(choc.precio_usd, 0.8, 'sin precio se calcula con el margen sobre el precio (0,40 con 50 % = 0,80)'); assert.equal(choc.stock, 10);
     assert.equal((await ok(api('GET', '/api/productos?q=Jugo%20de%20naranja'))).find((x) => x.nombre === 'Jugo de naranja 1 L').stock, 12.5);
     assert.equal((await ok(api('GET', '/api/productos/' + p1))).stock, stock1, 'la existencia de un producto con movimientos no cambia');
     assert.ok((await ok(api('GET', '/api/categorias'))).some((c) => c.nombre === 'Galletas importadas'));
@@ -937,6 +986,49 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
   await ok(api('POST', `/api/plataforma/empresas/${emp.id}/clave-admin`, { clave: 'nueva-clave-9' }, tp));
   await falla(api('GET', '/api/productos', null, tokSur), 401); // sesiones cerradas al restablecer la clave
   await ok(api('POST', '/api/login', { empresa: 'abasto-sur', usuario: 'admin', clave: 'nueva-clave-9' }, ''));
+
+  paso('tasa del BCV: lectura de la página y registro automático sin pisar lo escrito a mano');
+  {
+    const BCV = require('../bcv');
+    const manana = D.sumarDias(1);
+    const html = (usd, eur, fv) => `<div id="euro"><strong> ${eur} </strong></div><div id="dolar"><strong> ${usd} </strong></div><span class="date-display-single" content="${fv}T00:00:00-04:00">Martes</span>`;
+    const t = BCV.leerPagina(html('36,58990000', '42,10250000', manana));
+    assert.deepEqual([t.usd, t.eur, t.fechaValor], [36.5899, 42.1025, manana]);
+    assert.equal(BCV.fechaValorDe('<span class="date-display-single">Lunes, 17 Noviembre 2026</span>'), '2026-11-17');
+    assert.throws(() => BCV.leerPagina('<html>otra cosa</html>'), /formato/);
+    assert.throws(() => BCV.leerPagina(html('36,5', '900,0', manana)), /coherentes/);
+    const r = D.conEmpresa('abasto-sur', () => {
+      D.run("INSERT OR REPLACE INTO tasas_cambio(fecha,tasa_usd_ves,tasa_eur_usd,fuente,usuario,registrada_en) VALUES(?,?,?,?,?,?)", D.hoy(), 36.5, 1.15, 'BCV', 'admin', D.ahora());
+      const a1 = BCV.aplicar(t);                                  // tasa de mañana: se registra con su fecha
+      const a2 = BCV.aplicar(t);                                  // igual: no hace nada
+      const a3 = BCV.aplicar({ ...t, usd: 36.9, eur: 42.5 });     // cambió: se corrige la automática
+      const fila = D.get('SELECT * FROM tasas_cambio WHERE fecha=?', manana);
+      const a4 = BCV.aplicar({ ...t, fechaValor: D.hoy() });      // hoy fue escrita a mano: se respeta
+      const hoyFila = D.get('SELECT * FROM tasas_cambio WHERE fecha=?', D.hoy());
+      const a5 = BCV.aplicar({ ...t, usd: 80, eur: 92, fechaValor: D.sumarDias(2) }); // salto de más de 30%: se descarta
+      const a6 = BCV.aplicar({ ...t, fechaValor: D.hoy() }, { forzar: true, usuario: 'admin' }); // el botón sí corrige
+      return { a1, a2, a3, a4, a5, a6, fila, hoyFila, final: D.get('SELECT * FROM tasas_cambio WHERE fecha=?', D.hoy()), nlog: D.get("SELECT COUNT(*) n FROM tasas_log WHERE fuente LIKE 'BCV (%'").n };
+    });
+    assert.equal(r.a1.aplicada, true); assert.equal(r.a1.fecha, manana);
+    assert.equal(r.a2.aplicada, false); assert.equal(r.a2.sinCambio, true);
+    assert.equal(r.a3.aplicada, true); assert.equal(r.a3.actualizada, true);
+    assert.equal(r.fila.tasa_usd_ves, 36.9); assert.equal(r.fila.fuente, 'BCV (automática)');
+    assert.ok(Math.abs(r.fila.tasa_eur_usd - 42.5 / 36.9) < 1e-6);
+    assert.equal(r.a4.aplicada, false); assert.match(r.a4.motivo, /a mano/);
+    assert.equal(r.hoyFila.tasa_usd_ves, 36.5);
+    assert.equal(r.a5.aplicada, false); assert.match(r.a5.motivo, /descart/);
+    assert.equal(r.a6.aplicada, true); assert.equal(r.final.tasa_usd_ves, 36.5899); assert.equal(r.final.fuente, 'BCV (consulta manual)');
+    assert.equal(r.nlog, 3, 'cada cambio queda en el historial de tasas');
+    // la empresa puede apagar la actualización automática
+    const par = await ok(api('GET', '/api/parametros'));
+    assert.equal(par.tasas.auto_bcv, true);
+    await ok(api('PUT', '/api/parametros/tasas', { auto_bcv: false }));
+    assert.equal((await ok(api('GET', '/api/tasas'))).auto_bcv, false);
+    await ok(api('PUT', '/api/parametros/tasas', { auto_bcv: true }));
+    // abrir el día sin escribir tasa usa la registrada hoy
+    const jr = await ok(api('GET', '/api/jornada'));
+    if (!jr.jornada && jr.tasa_hoy) { await ok(api('POST', '/api/jornada/abrir', {})); assert.equal((await ok(api('GET', '/api/jornada'))).jornada.tasa_usd_ves, jr.tasa_hoy.tasa_usd_ves); }
+  }
 
   paso('respaldo automático y descarga de la base');
   const { respaldarTodo } = require('../respaldo');

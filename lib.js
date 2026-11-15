@@ -70,7 +70,11 @@ function movimiento(producto_id, tipo, cantidad, costo, motivo, ref_tipo, ref_id
   return { id, costo: r.costo, costo_prom: r.prom, saldo_cant: r.sq, saldo_valor: r.sv };
 }
 const mov = (...a) => movimiento(...a).id;
-function precioPorMargen(costo, margen) { return r2(costo * (1 + margen / 100)); }
+// El margen es la utilidad como porcentaje del PRECIO DE VENTA: costo 5,90 con margen 30 % -> 5,90 / 0,70 = 8,43.
+function precioPorMargen(costo, margen) {
+  if (!(margen < 100)) err(400, 'El margen debe ser menor a 100 %: es la parte del precio de venta que queda como ganancia');
+  return r2(costo / (1 - margen / 100));
+}
 
 // ---------- cuentas ----------
 function saldoCuenta(id) {
@@ -156,16 +160,24 @@ function crearVenta(o) {
     const p = D.get('SELECT * FROM productos WHERE id=?', it.producto_id);
     if (!p) err(400, 'Producto inexistente');
     if (!p.activo) err(400, `"${p.nombre}" está inactivo y no se puede vender`);
-    const cant = Number(it.cantidad);
-    if (!(cant > 0)) err(400, `Cantidad inválida para "${p.nombre}"`);
-    let precio = p.precio_usd;
-    if (it.precio_usd != null && Math.abs(Number(it.precio_usd) - p.precio_usd) > 0.0001) {
-      if (!perms.has('precio.cambiar')) err(403, 'No tienes permiso para cambiar precios');
-      precio = Number(it.precio_usd);
-      audit(usuario, 'cambio_precio_venta', 'producto', p.id, { original: p.precio_usd, aplicado: precio });
+    const cantU = Number(it.cantidad);
+    if (!(cantU > 0)) err(400, `Cantidad inválida para "${p.nombre}"`);
+    // Venta al mayor: se vende por unidad de compra (caja, bulto…); el inventario siempre se mueve en unidades de venta.
+    const mayor = it.unidad === 'mayor';
+    if (mayor) {
+      if (!(p.factor > 1) || !(p.precio_mayor_usd > 0)) err(400, `"${p.nombre}" no tiene precio al mayor`);
+      if (!Number.isInteger(cantU)) err(400, `Al mayor "${p.nombre}" se vende por ${p.unidad_compra} completa`);
     }
-    if (!(precio > 0)) err(400, `"${p.nombre}" no tiene precio de venta activo`);
-    lineas.push({ p, cant, precio });
+    const base = mayor ? p.precio_mayor_usd : p.precio_usd;   // precio por unidad de venta (detal) o por unidad de compra (mayor)
+    let precioU = base;
+    if (it.precio_usd != null && Math.abs(Number(it.precio_usd) - base) > 0.0001) {
+      if (!perms.has('precio.cambiar')) err(403, 'No tienes permiso para cambiar precios');
+      precioU = Number(it.precio_usd);
+      audit(usuario, 'cambio_precio_venta', 'producto', p.id, { original: base, aplicado: precioU, unidad: mayor ? 'mayor' : 'detal' });
+    }
+    if (!(precioU > 0)) err(400, `"${p.nombre}" no tiene precio de venta activo`);
+    const cant = mayor ? cantU * p.factor : cantU;
+    lineas.push({ p, cant, precio: mayor ? precioU / p.factor : precioU, brutoFijo: mayor ? r4(cantU * precioU) : null, unidad: mayor ? 'mayor' : null, cantU: mayor ? cantU : null });
     porProd.set(p.id, (porProd.get(p.id) || 0) + cant);
   }
   if (!op.stock_negativo) {
@@ -179,7 +191,7 @@ function crearVenta(o) {
   }
 
   let subtotal = 0;
-  for (const l of lineas) { l.bruto = r4(l.cant * l.precio); subtotal += l.bruto; l.desc = r4(l.bruto * pct / 100); }
+  for (const l of lineas) { l.bruto = l.brutoFijo != null ? l.brutoFijo : r4(l.cant * l.precio); subtotal += l.bruto; l.desc = r4(l.bruto * pct / 100); }
   subtotal = r2(subtotal);
   const descuento = r2(lineas.reduce((a, l) => a + l.desc, 0));
   const total = r2(subtotal - descuento);
@@ -232,8 +244,8 @@ function crearVenta(o) {
   for (const l of lineas) {
     // el consumo se valora al costo promedio vigente en este momento; el mismo costo queda en el detalle de la venta
     const m = movimiento(l.p.id, 'venta', -l.cant, l.p.costo_usd, 'Venta ' + numero, 'venta', ventaId, usuario, jor.id);
-    D.insert('INSERT INTO venta_detalles(venta_id,producto_id,cantidad,precio_usd,costo_usd,descuento_usd) VALUES(?,?,?,?,?,?)',
-      ventaId, l.p.id, l.cant, l.precio, m.costo, l.desc);
+    D.insert('INSERT INTO venta_detalles(venta_id,producto_id,cantidad,precio_usd,costo_usd,descuento_usd,unidad,cant_unidad) VALUES(?,?,?,?,?,?,?,?)',
+      ventaId, l.p.id, l.cant, l.precio, m.costo, l.desc, l.unidad, l.cantU);
   }
   for (const p of pagos) {
     if (p.medio === 'credito') continue;

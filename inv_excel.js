@@ -18,7 +18,7 @@ const COLUMNAS = [
   { k: 'factor_conversion', h: 'Unidades por unidad de compra', ancho: 16, e: 'entero', que: 'Cuántas unidades de venta trae una unidad de compra: una caja de 20 es 20. Si lo dejas vacío, 1.', ej: 20 },
   { k: 'costo_usd', h: 'Costo por unidad de venta USD *', ancho: 17, req: 1, e: 'decimal', min: 0, que: 'Lo que te cuesta cada unidad, en dólares. Con este costo se valoriza tu inventario: no lo dejes vacío si tienes existencia.', ej: 0.95 },
   { k: 'precio_venta_usd', h: 'Precio de venta USD *', ancho: 15, req: 1, e: 'decimal', min: 0, que: 'Precio al público en dólares. Si no pones precio pero sí margen, el precio se calcula.', ej: 1.3 },
-  { k: 'margen_utilidad', h: 'Margen % (opcional)', ancho: 12, e: 'decimal', min: 0, que: 'Porcentaje de ganancia sobre el costo. Solo se usa cuando no pones el precio.', ej: '' },
+  { k: 'margen_utilidad', h: 'Margen % (opcional)', ancho: 12, e: 'decimal', min: 0, que: 'Porcentaje del precio de venta que queda como ganancia (precio = costo ÷ (1 − margen)). Solo se usa cuando no pones el precio.', ej: '' },
   { k: 'precio_fijo', h: 'Precio fijo (sí/no)', ancho: 12, lista: 'sn', que: '«sí»: el precio se mantiene aunque cambie el costo. «no»: se recalcula con el margen. Si lo dejas vacío, «sí».', ej: 'sí' },
   { k: 'stock_actual', h: 'Existencia inicial *', ancho: 14, req: 1, e: 'decimal', min: 0, que: 'Cuántas unidades de venta tienes hoy en el local, contadas. Si no tienes, escribe 0.', ej: 25 },
   { k: 'stock_minimo', h: 'Stock mínimo', ancho: 12, e: 'decimal', min: 0, que: 'Por debajo de esta cantidad el sistema te avisa que hay que reponer.', ej: 12 },

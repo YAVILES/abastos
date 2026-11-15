@@ -11,7 +11,7 @@
   { const l = document.createElement('link'); l.rel = 'manifest'; l.href = '/tienda/manifest.webmanifest' + (slug ? '?e=' + encodeURIComponent(slug) : ''); document.head.appendChild(l); }
   let token = ls.get(K('token')), cliente = JSON.parse(ls.get(K('cliente')) || 'null');
   let cfg = null, catalogo = { categorias: [], productos: [] }, medios = [];
-  let carrito = JSON.parse(ls.get(K('carrito')) || '[]');
+  let carrito = JSON.parse(ls.get(K('carrito')) || '[]').map((i) => ({ ...i, k: i.k || String(i.id) }));
   let timer = null, cdTimer = null;
 
   async function api(m, u, b) {
@@ -95,19 +95,29 @@
       $('#cats').innerHTML = `<button class="btn sm ${!filtro.cat ? 'pri' : ''}" data-c="">Todo</button>` + catalogo.categorias.map((c) => `<button class="btn sm ${String(filtro.cat) === String(c.id) ? 'pri' : ''}" data-c="${c.id}">${e(c.nombre)}</button>`).join('');
       $('#cats').querySelectorAll('[data-c]').forEach((b) => b.onclick = () => { filtro.cat = b.dataset.c; cargar().catch(falla); });
       $('#lista').innerHTML = catalogo.productos.map((p) => {
-        const en = carrito.find((i) => i.id === p.id);
+        const en = carrito.find((i) => i.k === String(p.id));
+        const my = p.mayor && p.mayor.disponible > 0 ? p.mayor : null, enm = my && carrito.find((i) => i.k === p.id + 'm');
+        const filaMayor = my ? `<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--line)"><div class="muted" style="font-size:12px">Al mayor · ${e(my.unidad)} de ${fm(my.factor, 0)}</div><div class="p" style="font-size:16px">${usdFmt(my.precio_usd)}</div>
+          ${enm ? `<div class="qty" style="margin-top:4px"><button class="btn sm" data-m="${p.id}m">−</button><b style="min-width:26px;text-align:center">${enm.cantidad}</b><button class="btn sm" data-a="${p.id}m">+</button></div>` : `<button class="btn sm" style="margin-top:4px" data-a="${p.id}m">Agregar ${e(my.unidad)}</button>`}</div>` : '';
         return `<div class="prod"><div class="n">${e(p.nombre)}</div><div class="muted" style="font-size:12px">${e([p.marca, p.presentacion].filter(Boolean).join(' · '))}</div><div class="p">${usdFmt(p.precio_usd)}</div><div class="muted" style="font-size:12px">${vesFmt(p.precio_usd)}</div>
           <div class="muted" style="font-size:11px">${p.disponible <= 5 ? `<span class="warn">Quedan ${fm(p.disponible, 0)}</span>` : 'Disponible'}</div>
-          ${en ? `<div class="qty" style="margin-top:6px"><button class="btn sm" data-m="${p.id}">−</button><b style="min-width:26px;text-align:center">${en.cantidad}</b><button class="btn sm" data-a="${p.id}">+</button></div>` : `<button class="btn pri sm" style="margin-top:6px" data-a="${p.id}">Agregar</button>`}</div>`;
+          ${en ? `<div class="qty" style="margin-top:6px"><button class="btn sm" data-m="${p.id}">−</button><b style="min-width:26px;text-align:center">${en.cantidad}</b><button class="btn sm" data-a="${p.id}">+</button></div>` : `<button class="btn pri sm" style="margin-top:6px" data-a="${p.id}">Agregar</button>`}${filaMayor}</div>`;
       }).join('') || '<div class="empty" style="grid-column:1/-1">No encontramos productos disponibles.</div>';
-      $('#lista').querySelectorAll('[data-a]').forEach((b) => b.onclick = () => cambiar(+b.dataset.a, 1));
-      $('#lista').querySelectorAll('[data-m]').forEach((b) => b.onclick = () => cambiar(+b.dataset.m, -1));
+      $('#lista').querySelectorAll('[data-a]').forEach((b) => b.onclick = () => cambiar(b.dataset.a, 1));
+      $('#lista').querySelectorAll('[data-m]').forEach((b) => b.onclick = () => cambiar(b.dataset.m, -1));
     }
-    function cambiar(id, d) {
-      const p = catalogo.productos.find((x) => x.id === id); let it = carrito.find((i) => i.id === id);
-      if (!it && d > 0) carrito.push(it = { id, nombre: p.nombre, precio_usd: p.precio_usd, cantidad: 0 });
-      if (d > 0 && it.cantidad + 1 > p.disponible) return toast('No hay más unidades disponibles', 'bad');
-      it.cantidad += d; if (it.cantidad <= 0) carrito = carrito.filter((i) => i.id !== id);
+    // k = id del producto (detal) o id + 'm' (al mayor, por caja o bulto)
+    function cambiar(k, d) {
+      const mayor = k.endsWith('m'), id = parseInt(k, 10);
+      const p = catalogo.productos.find((x) => x.id === id); let it = carrito.find((i) => i.k === k);
+      if (!it && d > 0) carrito.push(it = mayor ? { k, id, unidad: 'mayor', nombre: `${p.nombre} (${p.mayor.unidad} de ${fm(p.mayor.factor, 0)})`, precio_usd: p.mayor.precio_usd, cantidad: 0 } : { k, id, nombre: p.nombre, precio_usd: p.precio_usd, cantidad: 0 });
+      if (d > 0) {
+        const otro = carrito.find((i) => i.id === id && i.k !== k);   // lo que ya lleva por la otra presentación también cuenta
+        const f = p.mayor ? p.mayor.factor : 1;
+        const usadas = (mayor ? (it.cantidad + 1) * f : it.cantidad + 1) + (otro ? (otro.unidad === 'mayor' ? otro.cantidad * f : otro.cantidad) : 0);
+        if (usadas > p.disponible + 1e-9) return toast('No hay más unidades disponibles', 'bad');
+      }
+      it.cantidad += d; if (it.cantidad <= 0) carrito = carrito.filter((i) => i.k !== k);
       guardarCarro(); vistaCatalogo();
     }
     let t; $('#q').oninput = (ev) => { clearTimeout(t); t = setTimeout(() => { filtro.q = ev.target.value; cargar().catch(falla); }, 250); };
@@ -134,10 +144,15 @@
   }
 
   // ---------- carrito ----------
+  function cambiarCarro(k, d) {
+    const i = carrito.find((x) => x.k === k); if (!i) return;
+    i.cantidad += d; if (i.cantidad <= 0) carrito = carrito.filter((x) => x !== i);
+    guardarCarro(); vistaCarrito();
+  }
   function vistaCarrito() {
     if (!carrito.length) return marco('Mi carrito', '<div class="card empty">Tu carrito está vacío.<br><br><a class="btn pri" href="#/catalogo">Ir al catálogo</a></div>', { atras: () => (location.hash = '#/catalogo') });
     marco('Mi carrito', `<div class="card">${carrito.map((i) => `<div class="row" style="justify-content:space-between;align-items:center;border-bottom:1px solid var(--line);padding:8px 0"><div style="flex:1"><b>${e(i.nombre)}</b><div class="muted">${usdFmt(i.precio_usd)} · ${vesFmt(i.precio_usd)}</div></div>
-        <div class="qty"><button class="btn sm" data-m="${i.id}">−</button><b style="min-width:26px;text-align:center">${i.cantidad}</b><button class="btn sm" data-a="${i.id}">+</button></div><b style="min-width:70px;text-align:right">${usdFmt(i.cantidad * i.precio_usd)}</b></div>`).join('')}
+        <div class="qty"><button class="btn sm" data-m="${i.k}">−</button><b style="min-width:26px;text-align:center">${i.cantidad}</b><button class="btn sm" data-a="${i.k}">+</button></div><b style="min-width:70px;text-align:right">${usdFmt(i.cantidad * i.precio_usd)}</b></div>`).join('')}
       <div class="r" style="margin-top:12px"><div class="muted">Total</div><div style="font-size:28px;font-weight:800">${usdFmt(totalCarro())}</div><div class="muted">${vesFmt(totalCarro())}</div></div></div>
       <div class="card"><h2>¿Cómo lo recibes?</h2><div class="row"><label style="display:flex;gap:6px;align-items:center;margin:0"><input type="radio" name="ent" value="retiro" checked> Retiro en tienda</label><label style="display:flex;gap:6px;align-items:center;margin:0"><input type="radio" name="ent" value="envio"> Envío a domicilio</label></div>
       <div id="env" class="form" style="margin-top:12px" hidden><div><label>Nombre de quien recibe</label><input id="c1" value="${e(cliente.nombre)}"></div><div><label>Teléfono</label><input id="c2" inputmode="tel" value="${e(cliente.telefono || '')}"></div><div><label>Zona</label><input id="c3"></div><div><label>Dirección</label><input id="c4"></div><div class="full"><label>Punto de referencia</label><input id="c5"></div></div>
@@ -145,12 +160,12 @@
       <p class="muted">Al confirmar reservamos tu mercancía por ${cfg.reserva_minutos} minutos. Luego te mostramos cómo pagar.</p>
       <button class="btn pri lg" style="width:100%" id="conf">Confirmar pedido</button>`, { atras: () => (location.hash = '#/catalogo') });
     document.querySelectorAll('[name=ent]').forEach((r) => r.onchange = () => { $('#env').hidden = document.querySelector('[name=ent]:checked').value !== 'envio'; });
-    document.querySelectorAll('[data-a]').forEach((b) => b.onclick = () => { carrito.find((i) => i.id === +b.dataset.a).cantidad++; guardarCarro(); vistaCarrito(); });
-    document.querySelectorAll('[data-m]').forEach((b) => b.onclick = () => { const i = carrito.find((x) => x.id === +b.dataset.m); i.cantidad--; if (i.cantidad <= 0) carrito = carrito.filter((x) => x !== i); guardarCarro(); vistaCarrito(); });
+    document.querySelectorAll('[data-a]').forEach((b) => b.onclick = () => { cambiarCarro(b.dataset.a, 1); });
+    document.querySelectorAll('[data-m]').forEach((b) => b.onclick = () => { cambiarCarro(b.dataset.m, -1); });
     $('#conf').onclick = async () => {
       $('#conf').disabled = true;
       try {
-        const r = await api('POST', '/api/app/pedidos', { items: carrito.map((i) => ({ producto_id: i.id, cantidad: i.cantidad })), entrega: document.querySelector('[name=ent]:checked').value,
+        const r = await api('POST', '/api/app/pedidos', { items: carrito.map((i) => ({ producto_id: i.id, cantidad: i.cantidad, unidad: i.unidad })), entrega: document.querySelector('[name=ent]:checked').value,
           contacto: $('#c1').value, telefono: $('#c2').value, zona: $('#c3').value, direccion: $('#c4').value, referencia_entrega: $('#c5').value, nota: $('#nota').value });
         carrito = []; guardarCarro(); location.hash = '#/pedido/' + r.id;
       } catch (er) { falla(er); $('#conf').disabled = false; }
@@ -176,7 +191,7 @@
       <ul class="pasos">${p.semaforo.pasos.map((n, i) => `<li class="${i < p.semaforo.paso ? 'hecho' : i === p.semaforo.paso ? 'actual' : ''}">${e(n)}</li>`).join('')}</ul>
       ${p.orden && p.orden.repartidor && ['lista_envio', 'retirada', 'enviada', 'entregada'].includes(p.orden.estado) ? `<div class="card" style="margin-top:12px"><b>${p.orden.estado === 'enviada' ? '🛵 Tu pedido va en camino' : p.orden.estado === 'retirada' ? '🛵 El repartidor ya retiró tu pedido' : p.orden.estado === 'entregada' ? '✔ Entregado' : '🛵 Ya tiene repartidor'}</b><div>Repartidor: ${e(p.orden.repartidor)}${p.orden.estado !== 'entregada' && p.orden.repartidor_tel ? ` · <a href="tel:${e(p.orden.repartidor_tel)}">Llamar</a>` : ''}</div>${p.orden.salida_en ? `<div class="muted">Salió a las ${e(p.orden.salida_en.slice(11, 16))}</div>` : ''}${p.orden.entregado_en ? `<div class="muted">Entregado a las ${e(p.orden.entregado_en.slice(11, 16))}${p.orden.receptor ? ' · recibió ' + e(p.orden.receptor) : ''}</div>` : ''}</div>` : ''}
       ${p.expira && ['pendiente', 'pago_reportado'].includes(p.estado) ? `<p class="warn" id="cd"></p>` : ''}
-      <div class="card" style="margin-top:12px"><h2>Tu pedido</h2>${p.items.map((i) => `<div class="row" style="justify-content:space-between"><span>${fm(i.cantidad, 0)} × ${e(i.nombre)}</span><span>${usdFmt(i.cantidad * i.precio_usd)}</span></div>`).join('')}
+      <div class="card" style="margin-top:12px"><h2>Tu pedido</h2>${p.items.map((i) => `<div class="row" style="justify-content:space-between"><span>${i.unidad === 'mayor' ? fm(i.cant_unidad, 0) + ' × ' + e(i.nombre) + ' (por caja)' : fm(i.cantidad, 0) + ' × ' + e(i.nombre)}</span><span>${usdFmt(i.unidad === 'mayor' ? i.cant_unidad * i.precio_unidad : i.cantidad * i.precio_usd)}</span></div>`).join('')}
         <div class="r" style="margin-top:8px"><b style="font-size:22px">${usdFmt(p.total_usd)}</b><div class="muted">${vesFmt(p.total_usd)}</div></div>
         <p class="muted">${p.entrega === 'envio' ? `Envío a ${e(p.contacto)} — ${e(p.zona)}, ${e(p.direccion)}` : 'Retiro en tienda'}</p></div>
       ${puedePagar && !pendiente ? seccionPago(p) : ''}
