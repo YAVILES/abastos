@@ -117,17 +117,22 @@
       const desc = Math.round(sub * st.pct) / 100;
       return { sub, desc, total: Math.round((sub - desc) * 100) / 100 };
     }
+    // Existencia: lo que se vende (en unidades de venta, una caja = su factor) no puede pasar de lo disponible
+    const usoBase = (id) => st.items.filter((i) => i.id === id).reduce((a, i) => a + i.cantidad * (i.mayor ? i.factor : 1), 0);
+    const excesos = () => [...new Set(st.items.map((i) => i.id))].map((id) => ({ it: st.items.find((i) => i.id === id), uso: usoBase(id) }))
+      .filter((x) => x.uso > x.it.disponible + 1e-9);
+    const avisoStock = () => { const ex = excesos(); return ex.length ? `<div class="check mal" style="margin-top:12px"><span class="pt"></span><div style="flex:1"><b>No hay existencia suficiente para cobrar.</b> ${ex.map((x) => `${e(x.it.nombre)}: piden ${fm(x.uso, 0)} y hay ${fm(Math.max(0, x.it.disponible), 0)}`).join(' · ')}. Baja las cantidades o quita el producto.</div></div>` : ''; };
     function pintarVenta() {
       const t = totales();
-      $('#carrito', root).innerHTML = st.items.length ? A.tabla([
+      $('#carrito', root).innerHTML = (st.items.length ? A.tabla([
         { h: 'Producto', f: (r) => `<b>${e(r.nombre)}</b><div class="muted" style="font-size:11px">${e(r.codigo)} · disp. ${r.mayor ? fm(Math.floor(r.disponible / r.factor + 1e-9), 0) + ' ' + e(r.uc || 'cajas') : fm(r.disponible, 0)}</div>` },
         { h: 'Unidad', f: (r, i) => r.p_mayor > 0 && r.factor > 1 ? `<select data-uni="${i}"><option value="d">${e(r.uv || 'Unidad')} (detal)</option><option value="m" ${r.mayor ? 'selected' : ''}>${e(r.uc || 'Caja')} ×${fm(r.factor, 0)} (mayor)</option></select>` : `<span class="muted">${e(r.uv || 'unidad')}</span>` },
         { h: 'Precio', n: 1, f: (r, i) => A.can('precio.cambiar') ? `<input data-precio="${i}" type="number" step="any" value="${r.precio}" style="width:80px;text-align:right">` : usd(r.precio) },
         { h: 'Cant.', f: (r, i) => `<span class="qty"><button class="btn sm" data-a="menos" data-i="${i}">−</button><input data-cant="${i}" type="number" step="any" min="0" value="${r.cantidad}"><button class="btn sm" data-a="mas" data-i="${i}">+</button></span>` },
-        { h: 'Subtotal', n: 1, f: (r) => usd(r.cantidad * r.precio) }, { h: '', f: (r, i) => `<button class="btn sm" data-a="quitar" data-i="${i}">✕</button>` }], st.items) : '<div class="empty">Carrito vacío. Escanea o busca un producto.</div>';
+        { h: 'Subtotal', n: 1, f: (r) => usd(r.cantidad * r.precio) }, { h: '', f: (r, i) => `<button class="btn sm" data-a="quitar" data-i="${i}">✕</button>` }], st.items) : '<div class="empty">Carrito vacío. Escanea o busca un producto.</div>') + avisoStock();
       $('#tot', root).textContent = usd(t.total);
       $('#tot2', root).textContent = `${ves(t.total * S.jornada.tasa_usd_ves)} · € ${fm(t.total / S.jornada.tasa_eur_usd)}`;
-      $('#bcob', root).textContent = 'Cobrar'; $('#bcob', root).disabled = !st.items.length;
+      $('#bcob', root).textContent = 'Cobrar'; $('#bcob', root).disabled = !st.items.length || excesos().length > 0;
     }
     function fijarCliente(c) {
       st.cliente = c;
@@ -182,6 +187,7 @@
     function agregar(p) {
       if (st.pedido) return A.toast('Estás atendiendo un pedido de delivery: suéltalo para vender otra cosa', 'bad');
       if (requiere && !st.cliente) { identificar().then((c) => { if (c) agregar(p); else A.toast('Identifica al cliente para iniciar la venta', 'bad'); }); return; }
+      if (usoBase(p.id) + 1 > p.disponible + 1e-9) { A.toast(`No hay más existencia de "${p.nombre}" (disponible ${fm(Math.max(0, p.disponible), 0)})`, 'bad'); return; }
       const ex = st.items.find((i) => i.id === p.id && !i.mayor);
       if (ex) ex.cantidad += 1; else st.items.push({ id: p.id, nombre: p.nombre, codigo: p.codigo, precio: p.precio_usd, cantidad: 1, disponible: p.disponible, mayor: false, p_detal: p.precio_usd, p_mayor: p.precio_mayor_usd || 0, factor: p.factor || 1, uc: p.unidad_compra, uv: p.unidad_venta });
       if (!(p.precio_usd > 0)) A.toast(`"${p.nombre}" no tiene precio de venta`, 'bad');
@@ -264,6 +270,7 @@
         const r = await api.post(`/api/pedidos/${p.id}/validar-pago`, { pago_id: pg.id, monto_confirmado: v.monto_confirmado });
         soltarPedido(); await A.refrescarEstado();
         A.ok('Venta ' + r.venta.numero + ' generada');
+        if (S.imprimir) A.imprimirVenta(r.venta.id).catch(A.fail);
         A.modal('Pedido validado', `<div class="c"><div style="font-size:40px">✅</div><h2>${e(r.venta.numero)}</h2><div style="font-size:26px;font-weight:800">${usd(r.venta.total_usd)}</div><p class="muted">Se descontó el inventario y se creó la <b>orden de entrega</b> para despacharlo.</p></div>`,
           { pie: '<button class="btn" data-p>Imprimir recibo</button><a class="btn" href="#/pedidos/entregas" data-d>Ir al despacho</a><button class="btn pri" data-c>Seguir vendiendo</button>', onMount: (m, c2) => {
             $('[data-c]', m).onclick = () => { c2(); q.focus(); }; $('[data-d]', m).onclick = c2; $('[data-p]', m).onclick = () => A.imprimirVenta(r.venta.id); } });
@@ -275,7 +282,7 @@
       await api.post(`/api/pedidos/${p.id}/rechazar-pago`, { motivo });
       A.ok('Pago rechazado; la mercancía quedó liberada'); soltarPedido();
     }
-    const teclas = (ev) => { if (!document.body.contains(root)) return document.removeEventListener('keydown', teclas); if (ev.key === 'F2') { ev.preventDefault(); if (st.pedido) validarPedido(); else if (st.items.length) cobrar(); } };
+    const teclas = (ev) => { if (!document.body.contains(root)) return document.removeEventListener('keydown', teclas); if (ev.key === 'F2') { ev.preventDefault(); if (st.pedido) validarPedido(); else if (excesos().length) A.toast('No hay existencia suficiente para esta venta', 'bad'); else if (st.items.length) cobrar(); } };
     document.addEventListener('keydown', teclas);
 
     function cobrar() {
@@ -286,12 +293,17 @@
       const bancos = (mo) => cuentas.filter((c) => c.tipo !== 'caja' && c.activo && c.moneda === mo);
       const m = A.modal('Cobrar', '<div id="pg"></div>', { ancho: true, pie: '<button class="btn" data-n>Cancelar</button><button class="btn pri lg" data-s disabled>Confirmar venta</button>', onMount: (v, cerrar) => {
         const body = $('#pg', v); const bs = $('[data-s]', v); $('[data-n]', v).onclick = cerrar;
-        const pagadoUSD = () => lin.filter((l) => l.medio !== 'credito').reduce((a, l) => a + aUSD(+l.monto || 0, l.moneda), 0);
+        const fin = (l) => l.medio === 'credito' || l.medio === 'cashea';   // lo financiado se calcula solo con lo que falta
+        const casM = () => { const c = lin.find((l) => l.medio === 'cashea'); return c ? (+c.monto || 0) : 0; };   // lo que financia Cashea, si se escribió
+        const pagadoUSD = () => lin.filter((l) => !fin(l)).reduce((a, l) => a + aUSD(+l.monto || 0, l.moneda), 0);
         const vSuma = () => vl.reduce((a, l) => a + aUSD(+l.monto || 0, l.moneda), 0);
-        const hayVuelto = () => { const h = lin.some((l) => l.medio === 'credito'); return !h && pagadoUSD() - t.total > 0.01; };
+        const hayVuelto = () => { const h = lin.some(fin); return !h && pagadoUSD() - t.total > 0.01; };
         const puedeConfirmar = () => {
-          const pag = pagadoUSD(), h = lin.some((l) => l.medio === 'credito');
-          if (!lin.length || (h ? pag >= t.total - 0.005 : pag < t.total - 0.005)) return false;
+          const pag = pagadoUSD(), h = lin.some(fin);
+          if (lin.some((l) => l.medio === 'cashea' && !String(l.referencia).trim())) return false;
+          const cm = casM();
+          if (cm > 0 && Math.abs(pag + cm - t.total) > 0.011) return false;
+          if (!lin.length || (h ? (cm > 0 ? false : pag >= t.total - 0.005) : pag < t.total - 0.005)) return false;
           if (hayVuelto() && vl.length) { if (Math.abs(pag - t.total - vSuma()) > 0.03) return false; if (vl.some((l) => !(+l.monto > 0) || (l.medio !== 'efectivo' && !String(l.referencia).trim()))) return false; }
           return true;
         };
@@ -301,21 +313,22 @@
           pintarPago();
         }
         function nueva(medio, moneda) {
-          const falta = Math.max(0, t.total - pagadoUSD());
-          lin.push({ medio, moneda, monto: medio === 'credito' ? '' : (Math.round(deUSD(falta, moneda) * 100) / 100 || ''), referencia: '', cuenta_id: (bancos(moneda)[0] || {}).id || '' });
+          const falta = Math.max(0, t.total - pagadoUSD() - casM());
+          lin.push({ medio, moneda, monto: fin({ medio }) ? '' : (Math.round(deUSD(falta, moneda) * 100) / 100 || ''), referencia: '', cuenta_id: (bancos(moneda)[0] || {}).id || '' });
           pintarPago();
         }
         function pintarPago() {
-          const pag = pagadoUSD(), hayCred = lin.some((l) => l.medio === 'credito');
+          const pag = pagadoUSD(), hayCred = lin.some(fin), hasCas = lin.some((l) => l.medio === 'cashea');
           const dif = Math.round((pag - t.total) * 100) / 100;
           body.innerHTML = `<div class="row" style="justify-content:space-between"><div><div class="muted">Total</div><div style="font-size:26px;font-weight:800">${usd(t.total)}</div><div class="muted">${ves(t.total * j.tasa_usd_ves)}</div></div>
-            <div class="r"><div class="muted">${hayCred ? 'A crédito' : dif >= -0.005 ? 'Vuelto' : 'Falta'}</div><div style="font-size:26px;font-weight:800" class="${hayCred || dif >= -0.005 ? 'ok' : 'bad'}">${hayCred ? usd(Math.max(0, t.total - pag)) : usd(Math.abs(dif))}</div>
+            <div class="r"><div class="muted">${hayCred ? (lin.some((l) => l.medio === 'cashea') ? 'Financia Cashea' : 'A crédito') : dif >= -0.005 ? 'Vuelto' : 'Falta'}</div><div style="font-size:26px;font-weight:800" class="${hayCred || dif >= -0.005 ? 'ok' : 'bad'}">${hayCred ? usd(casM() > 0 ? casM() : Math.max(0, t.total - pag)) : usd(Math.abs(dif))}</div>
+            ${hasCas ? `<div class="muted">Inicial del cliente ${usd(pag)}${casM() > 0 && Math.abs(pag + casM() - t.total) > 0.011 ? ` · <span class="bad">no suma el total (${usd(t.total - pag - casM())})</span>` : ''}</div>` : ''}
             ${!hayCred && dif > 0.005 ? `<div class="muted">${ves(dif * j.tasa_usd_ves)}</div>` : ''}</div></div>
-            <div class="mosaicos no-print">${[['efectivo', 'USD', '+ Efectivo $'], ['efectivo', 'VES', '+ Efectivo Bs'], ['pago_movil', 'VES', '+ Pago móvil'], ['transferencia', 'VES', '+ Transferencia'], ['punto', 'VES', '+ Punto'], ['efectivo', 'EUR', '+ Efectivo €'], ['credito', 'USD', '+ Crédito']].map(([me, mo, l], i) => `<button class="btn mosaico" data-add="${i}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICO_PAGO[me] || ICO_PAGO.efectivo}</svg><span>${l.replace('+ ', '')}</span></button>`).join('')}</div>
-            ${lin.map((l, i) => `<div class="pago-lin"><div><label>Medio</label><select data-k="medio" data-i="${i}">${Object.entries(A.MEDIOS).map(([k, n]) => `<option value="${k}" ${k === l.medio ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
-              <div><label>Moneda</label><select data-k="moneda" data-i="${i}" ${l.medio === 'credito' ? 'disabled' : ''}>${['USD', 'VES', 'EUR'].map((x) => `<option ${x === l.moneda ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
-              <div><label>${l.medio === 'credito' ? 'Se calcula solo' : 'Monto'}</label><input data-k="monto" data-i="${i}" type="number" step="any" min="0" value="${e(l.monto)}" ${l.medio === 'credito' ? 'disabled' : ''}></div>
-              <div>${['pago_movil', 'transferencia', 'punto'].includes(l.medio) ? `<label>Referencia / banco</label><div class="row" style="flex-wrap:nowrap"><input data-k="referencia" data-i="${i}" placeholder="N° referencia" value="${e(l.referencia)}"><select data-k="cuenta_id" data-i="${i}">${bancos(l.moneda).map((c) => `<option value="${c.id}" ${c.id == l.cuenta_id ? 'selected' : ''}>${e(c.nombre)}</option>`).join('') || '<option value="">Sin cuenta</option>'}</select></div>` : ''}</div>
+            <div class="mosaicos no-print">${[['efectivo', 'USD', '+ Efectivo $'], ['efectivo', 'VES', '+ Efectivo Bs'], ['pago_movil', 'VES', '+ Pago móvil'], ['transferencia', 'VES', '+ Transferencia'], ['punto', 'VES', '+ Punto'], ['efectivo', 'EUR', '+ Efectivo €'], ['credito', 'USD', '+ Crédito'], ...(S.cashea ? [['cashea', 'USD', '+ Cashea']] : [])].map(([me, mo, l], i) => `<button class="btn mosaico" data-add="${i}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICO_PAGO[me] || ICO_PAGO.efectivo}</svg><span>${l.replace('+ ', '')}</span></button>`).join('')}</div>
+            ${lin.map((l, i) => `<div class="pago-lin"><div><label>Medio</label><select data-k="medio" data-i="${i}">${Object.entries(A.MEDIOS).filter(([k]) => k !== 'cashea' || S.cashea).map(([k, n]) => `<option value="${k}" ${k === l.medio ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
+              <div><label>Moneda</label><select data-k="moneda" data-i="${i}" ${fin(l) ? 'disabled' : ''}>${['USD', 'VES', 'EUR'].map((x) => `<option ${x === l.moneda ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
+              <div><label>${l.medio === 'credito' ? 'Se calcula solo' : l.medio === 'cashea' ? 'Financia Cashea (USD)' : 'Monto'}</label><input data-k="monto" data-i="${i}" type="number" step="any" min="0" value="${e(l.monto)}" ${l.medio === 'credito' ? 'disabled' : ''} ${l.medio === 'cashea' ? 'placeholder="Lo que falta"' : ''}></div>
+              <div>${l.medio === 'cashea' ? `<label>Código u orden de Cashea</label><input data-k="referencia" data-i="${i}" placeholder="Código de la orden" value="${e(l.referencia)}">` : ''}${['pago_movil', 'transferencia', 'punto'].includes(l.medio) ? `<label>Referencia / banco</label><div class="row" style="flex-wrap:nowrap"><input data-k="referencia" data-i="${i}" placeholder="N° referencia" value="${e(l.referencia)}"><select data-k="cuenta_id" data-i="${i}">${bancos(l.moneda).map((c) => `<option value="${c.id}" ${c.id == l.cuenta_id ? 'selected' : ''}>${e(c.nombre)}</option>`).join('') || '<option value="">Sin cuenta</option>'}</select></div>` : ''}</div>
               <button class="btn sm" data-del="${i}">✕</button></div>`).join('')}
             ${lin.length ? '' : '<p class="muted">Agrega uno o más medios de pago (pago mixto permitido).</p>'}
             ${!hayCred && dif > 0.01 ? `<div class="card" style="margin-top:12px;background:var(--bg2,#f6f7f9)"><h3 style="margin:0 0 6px">¿Cómo entregas el vuelto? <span class="muted" style="font-weight:400">(${usd(dif)} · ${ves(dif * j.tasa_usd_ves)})</span></h3>
@@ -328,7 +341,7 @@
               : `<p class="muted" style="margin:0">Si no eliges nada se entrega todo en <b>efectivo $</b> (${usd(dif)}). Si das parte en bolívares o por pago móvil, agrégalo aquí para que la caja y el banco queden cuadrados.</p>`}</div>` : ''}`;
           const ok = hayCred ? pag < t.total - 0.005 : pag >= t.total - 0.005;
           bs.disabled = !puedeConfirmar();
-          body.querySelectorAll('[data-add]').forEach((b) => b.onclick = () => { const [me, mo] = [['efectivo', 'USD'], ['efectivo', 'VES'], ['pago_movil', 'VES'], ['transferencia', 'VES'], ['punto', 'VES'], ['efectivo', 'EUR'], ['credito', 'USD']][+b.dataset.add]; nueva(me, mo); });
+          body.querySelectorAll('[data-add]').forEach((b) => b.onclick = () => { const [me, mo] = [['efectivo', 'USD'], ['efectivo', 'VES'], ['pago_movil', 'VES'], ['transferencia', 'VES'], ['punto', 'VES'], ['efectivo', 'EUR'], ['credito', 'USD'], ['cashea', 'USD']][+b.dataset.add]; nueva(me, mo); });
           body.querySelectorAll('[data-vadd]').forEach((b) => b.onclick = () => { const [me, mo] = [['efectivo', 'USD'], ['efectivo', 'VES'], ['pago_movil', 'VES'], ['transferencia', 'VES'], ['efectivo', 'EUR']][+b.dataset.vadd]; nuevoVuelto(me, mo); });
           body.querySelectorAll('[data-vdel]').forEach((b) => b.onclick = () => { vl.splice(+b.dataset.vdel, 1); pintarPago(); });
           body.querySelectorAll('[data-vk]').forEach((el) => el.onchange = el.oninput = (ev) => {
@@ -342,10 +355,10 @@
           body.querySelectorAll('[data-k]').forEach((el) => el.onchange = el.oninput = (ev) => {
             const l = lin[+el.dataset.i], k = el.dataset.k; l[k] = el.value;
             if (ev.type === 'change' && (k === 'medio' || k === 'moneda' || k === 'cuenta_id' || k === 'monto')) {
-              if (k === 'medio' && el.value === 'credito') l.moneda = 'USD';
+              if (k === 'medio' && ['credito', 'cashea'].includes(el.value)) l.moneda = 'USD';
               if (k === 'moneda' || k === 'medio') l.cuenta_id = (bancos(l.moneda)[0] || {}).id || '';
               pintarPago();
-            } else if (k === 'monto') bs.disabled = !puedeConfirmar();
+            } else if (k === 'monto' || k === 'referencia') bs.disabled = !puedeConfirmar();
           });
         }
         pintarPago();
@@ -353,7 +366,7 @@
         bs.onclick = async () => {
           bs.disabled = true;
           const body_ = { cliente_id: st.cliente ? st.cliente.id : null, descuento_pct: st.pct, items: st.items.map((i) => ({ producto_id: i.id, cantidad: i.cantidad, precio_usd: i.precio, unidad: i.mayor ? 'mayor' : undefined })),
-            pagos: lin.map((l) => l.medio === 'credito' ? { medio: 'credito' } : { medio: l.medio, moneda: l.moneda, monto: +l.monto, referencia: l.referencia, cuenta_id: l.cuenta_id ? +l.cuenta_id : undefined }) };
+            pagos: lin.map((l) => l.medio === 'credito' ? { medio: 'credito' } : l.medio === 'cashea' ? { medio: 'cashea', referencia: l.referencia, monto: +l.monto > 0 ? +l.monto : undefined } : { medio: l.medio, moneda: l.moneda, monto: +l.monto, referencia: l.referencia, cuenta_id: l.cuenta_id ? +l.cuenta_id : undefined }) };
           if (hayVuelto() && vl.length) body_.vuelto = vl.map((l) => ({ medio: l.medio, moneda: l.moneda, monto: +l.monto, referencia: l.referencia, cuenta_id: l.cuenta_id ? +l.cuenta_id : undefined }));
           try {
             let r;
@@ -361,6 +374,7 @@
             catch (er) { if (/supervisor/.test(er.message) && A.can('credito.autorizar') && await A.confirmar('Autorización de crédito', e(er.message) + '<br>¿Autorizar la excepción?', { ok: 'Autorizar' })) r = await api.post('/api/ventas', { ...body_, forzar: true }); else throw er; }
             cerrar(); st.items = []; st.cliente = null; st.pct = 0; $('#pct', root).value = 0; cli.textContent = sinCliente; pintar();
             A.ok('Venta ' + r.numero + ' registrada');
+            if (S.imprimir) A.imprimirVenta(r.id).catch(A.fail);
             A.modal('Venta registrada', `<div class="c"><div style="font-size:40px">✅</div><h2>${e(r.numero)}</h2><div style="font-size:28px;font-weight:800">${usd(r.total_usd)}</div>
               ${r.vuelto_usd > 0 ? `<p>Vuelto: <b>${usd(r.vuelto_usd)}</b> · ${ves(r.vuelto_usd * j.tasa_usd_ves)}</p>${(r.vuelto || []).map((x) => `<div class="muted">Entregado en ${e(A.MEDIOS[x.medio])} ${mon(x.monto, x.moneda)}${x.referencia ? ' · ref ' + e(x.referencia) : ''}</div>`).join('')}` : ''}${r.credito_usd > 0 ? `<p>A crédito: <b>${usd(r.credito_usd)}</b></p>` : ''}</div>`,
               { pie: `<button class="btn pri lg" data-p>🖨 Imprimir ticket</button><button class="btn" data-c>Nueva venta</button>`, onMount: (v2, c2) => {
@@ -377,10 +391,10 @@
       elegir: (el) => { agregar(st.res[+el.dataset.i]); q.value = ''; res.hidden = true; st.res = []; q.focus(); },
       reconocer: () => reconocerPorFoto((p) => { agregar(p); q.focus(); }),
       menos: (el) => { const i = st.items[+el.dataset.i]; i.cantidad = Math.max(0, +(i.cantidad - 1).toFixed(3)); if (i.cantidad <= 0) st.items.splice(+el.dataset.i, 1); pintar(); },
-      mas: (el) => { st.items[+el.dataset.i].cantidad += 1; pintar(); },
+      mas: (el) => { const it = st.items[+el.dataset.i]; if (usoBase(it.id) + (it.mayor ? it.factor : 1) > it.disponible + 1e-9) return A.toast(`No hay más existencia de "${it.nombre}" (disponible ${fm(Math.max(0, it.disponible), 0)})`, 'bad'); it.cantidad += 1; pintar(); },
       quitar: (el) => { st.items.splice(+el.dataset.i, 1); pintar(); },
       vaciar: () => { if (st.pedido) return soltarPedido(); st.items = []; pintar(); q.focus(); },
-      cobrar: async () => { if (st.pedido) return validarPedido(); if (st.items.length && await asegurarCliente()) cobrar(); },
+      cobrar: async () => { if (st.pedido) return validarPedido(); if (excesos().length) return A.toast('No hay existencia suficiente para esta venta', 'bad'); if (st.items.length && await asegurarCliente()) cobrar(); },
       traer: () => traerPedido(), camara: () => A.lector.escanearCamara((cod) => A.lector.emitir(cod)).catch(A.fail), soltarPedido: () => soltarPedido(), rechazarPedido: () => rechazarPedido(),
       comprobante: async (el) => { const r = await api.get(`/api/pagos-reportados/${el.dataset.id}/comprobante`); A.modal('Comprobante', `<img src="${r.comprobante}" alt="comprobante" style="max-width:100%;border-radius:8px">`); },
       cliente: () => {
@@ -445,16 +459,26 @@
     } });
   }
 
+  // Imprime un documento HTML en un marco oculto: abre el cuadro de impresión sin ventanas emergentes, que el navegador suele bloquear.
+  A.imprimirHtml = (html) => {
+    const f = document.createElement('iframe');
+    f.setAttribute('aria-hidden', 'true'); f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+    document.body.appendChild(f);
+    const d = f.contentWindow.document; d.open(); d.write(html); d.close();
+    setTimeout(() => { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (er) { A.toast('No se pudo abrir la impresión: ' + er.message, 'bad'); } setTimeout(() => f.remove(), 120000); }, 350);
+  };
+  // El ticket va en bolívares, a la tasa con la que se hizo la venta; los pagos en otra moneda muestran también lo que entregó el cliente.
   A.imprimirVenta = async (id) => {
     const v = await api.get('/api/ventas/' + id);
-    const w = window.open('', '_blank', 'width=380,height=640');
-    if (!w) return A.toast('Permite las ventanas emergentes para imprimir', 'bad');
-    w.document.write(`<html><head><title>${e(v.numero)}</title><style>body{font:12px monospace;width:300px;margin:8px}table{width:100%}td{padding:1px 0}.r{text-align:right}hr{border:0;border-top:1px dashed #000}</style></head><body>
-      ${S.empresa.logo ? `<img src="${S.empresa.logo}" style="max-width:140px;max-height:70px;display:block;margin:0 auto 4px"><br>` : ''}<b>${e(S.empresa.nombre)}</b><br>${e(S.empresa.rif || '')}<br>${e(S.empresa.direccion || '')}<hr>Recibo ${e(v.numero)}<br>${e(v.fecha)}<br>Cajero: ${e(v.usuario)}${v.cliente ? '<br>Cliente: ' + e(v.cliente) : ''}<hr>
-      <table>${v.items.map((i) => `<tr><td colspan=2>${e(i.nombre)}</td></tr><tr><td>${fm(i.cantidad, 2)} x ${fm(i.precio_usd)}</td><td class=r>${fm(i.cantidad * i.precio_usd)}</td></tr>`).join('')}</table><hr>
-      <table><tr><td>Subtotal</td><td class=r>${usd(v.subtotal_usd)}</td></tr>${v.descuento_usd > 0 ? `<tr><td>Descuento</td><td class=r>-${usd(v.descuento_usd)}</td></tr>` : ''}<tr><td><b>TOTAL</b></td><td class=r><b>${usd(v.total_usd)}</b></td></tr></table><hr>
-      ${v.pagos.filter((p) => !p.anulado && p.tipo !== 'vuelto').map((p) => `${e(A.MEDIOS[p.medio])} ${mon(p.monto, p.moneda)}${p.referencia ? ' ref ' + e(p.referencia) : ''}<br>`).join('')}${v.vuelto_usd > 0 ? `Vuelto ${usd(v.vuelto_usd)}<br>${v.pagos.filter((p) => !p.anulado && p.tipo === 'vuelto').map((p) => `&nbsp;&nbsp;entregado: ${e(A.MEDIOS[p.medio])} ${mon(p.monto, p.moneda)}${p.referencia ? ' ref ' + e(p.referencia) : ''}<br>`).join('')}` : ''}<hr>Documento no fiscal. ¡Gracias por su compra!</body></html>`);
-    w.document.close(); w.focus(); setTimeout(() => w.print(), 250);
+    const t = v.tasa_usd_ves || (S.jornada && S.jornada.tasa_usd_ves) || 0;
+    const bs = (usdv) => ves(Math.round(usdv * t * 100) / 100);
+    const orig = (p) => (p.moneda === 'VES' ? ves(p.monto) : `${ves(Math.round(p.monto_usd * t * 100) / 100)} <small>(${mon(p.monto, p.moneda)})</small>`);
+    const html = (`<html><head><title>${e(v.numero)}</title><style>body{font:12px monospace;width:300px;margin:8px}table{width:100%}td{padding:1px 0}.r{text-align:right}hr{border:0;border-top:1px dashed #000}small{font-size:10px}</style></head><body>
+      ${S.empresa.logo ? `<img src="${S.empresa.logo}" style="max-width:140px;max-height:70px;display:block;margin:0 auto 4px"><br>` : ''}<b>${e(S.empresa.nombre)}</b><br>${e(S.empresa.rif || '')}<br>${e(S.empresa.direccion || '')}<hr>Recibo ${e(v.numero)}<br>${e(v.fecha)}<br>Cajero: ${e(v.usuario)}${v.cliente ? '<br>Cliente: ' + e(v.cliente) + (v.cliente_documento ? '<br>C.I./RIF: ' + e(v.cliente_documento) : '') : ''}<br>Tasa: ${fm(t, 2)} Bs por US$<hr>
+      <table>${v.items.map((i) => `<tr><td colspan=2>${e(i.nombre)}</td></tr><tr><td>${i.unidad === 'mayor' ? fm(i.cant_unidad, 0) + ' (mayor) x ' + bs(i.cantidad * i.precio_usd / i.cant_unidad) : fm(i.cantidad, 2) + ' x ' + bs(i.precio_usd)}</td><td class=r>${bs(i.cantidad * i.precio_usd)}</td></tr>`).join('')}</table><hr>
+      <table><tr><td>Subtotal</td><td class=r>${bs(v.subtotal_usd)}</td></tr>${v.descuento_usd > 0 ? `<tr><td>Descuento</td><td class=r>-${bs(v.descuento_usd)}</td></tr>` : ''}<tr><td><b>TOTAL</b></td><td class=r><b>${bs(v.total_usd)}</b></td></tr><tr><td><small>Equivale a</small></td><td class=r><small>${usd(v.total_usd)}</small></td></tr></table><hr>
+      ${v.pagos.filter((p) => !p.anulado && p.tipo !== 'vuelto').map((p) => `${e(A.MEDIOS[p.medio])} ${orig(p)}${p.referencia ? ' ref ' + e(p.referencia) : ''}<br>`).join('')}${v.vuelto_usd > 0 ? `Vuelto ${bs(v.vuelto_usd)}<br>${v.pagos.filter((p) => !p.anulado && p.tipo === 'vuelto').map((p) => `&nbsp;&nbsp;entregado: ${e(A.MEDIOS[p.medio])} ${orig(p)}${p.referencia ? ' ref ' + e(p.referencia) : ''}<br>`).join('')}` : ''}<hr>Documento no fiscal. ¡Gracias por su compra!</body></html>`);
+    A.imprimirHtml(html);
   };
 
   // ======================= CAJA =======================

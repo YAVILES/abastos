@@ -14,7 +14,7 @@ window.Abasto = (() => {
   const fecha = (s) => (s ? String(s).slice(0, 16).replace('T', ' ') : '—');
   const hoy = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
   const can = (p) => A.S.perms.has(p);
-  const MEDIOS = { efectivo: 'Efectivo', pago_movil: 'Pago móvil', transferencia: 'Transferencia', punto: 'Punto de venta', credito: 'Crédito' };
+  const MEDIOS = { efectivo: 'Efectivo', pago_movil: 'Pago móvil', transferencia: 'Transferencia', punto: 'Punto de venta', credito: 'Crédito', cashea: 'Cashea' };
   const tag = (txt, tipo = '') => `<span class="tag ${tipo}">${e(txt)}</span>`;
   const estadoTag = (s) => {
     const m = { completada: 'ok', pagada: 'ok', recibida: 'ok', cerrada: 'ok', cerrado: 'ok', validado: 'ok', abierta: 'info', pendiente: 'warn', abonada: 'warn', borrador: 'warn', pago_reportado: 'warn', anulada: 'bad', anulado: 'bad', rechazado: 'bad', cancelado: 'bad', vencido: 'bad', pagado: 'ok', entregado: 'ok', generado: 'info', cargado: 'warn', ajustado: 'ok', suspendido: 'bad', activo: 'ok' };
@@ -251,7 +251,7 @@ window.Abasto = (() => {
   async function cargarYo() {
     const me = await A.api.get('/api/me');
     A.S.user = me.usuario; A.S.perms = new Set(me.permisos); A.S.jornada = me.jornada; A.S.turno = me.turno; A.S.empresa = me.empresa;
-    A.S.licencia = me.licencia; A.S.empresa_codigo = me.empresa_codigo; A.S.reconocimiento = me.reconocimiento; A.S.lector = me.lector;
+    A.S.cashea = !!me.cashea; A.S.imprimir = me.imprimir_ticket !== false; A.S.licencia = me.licencia; A.S.empresa_codigo = me.empresa_codigo; A.S.reconocimiento = me.reconocimiento; A.S.lector = me.lector;
     A.lector.autoSerial();
   }
   A.refrescarEstado = async () => { await cargarYo(); pintarChips(); };
@@ -261,7 +261,7 @@ window.Abasto = (() => {
     ['inicio', 'Inicio', null], ['pos', 'Punto de venta', 'mod.pos'], ['caja', 'Caja', 'mod.caja'], ['pedidos', 'Pedidos app', 'mod.pedidos'], ['app', 'App de clientes (delivery)', 'mod.app'], ['reparto', 'App del repartidor', 'mod.app'],
     ['-', 'Inventario', null], ['productos', 'Productos', 'mod.productos'], ['inventario', 'Existencias', 'mod.inventario'], ['conteos', 'Conteos cíclicos', 'mod.conteos'],
     ['-', 'Compras', null], ['compras', 'Compras', 'mod.compras'], ['proveedores', 'Proveedores', 'mod.proveedores'], ['cxp', 'Cuentas por pagar', 'mod.cxp'],
-    ['-', 'Ventas y cobros', null], ['ventas', 'Ventas', 'mod.ventas'], ['clientes', 'Clientes y crédito', 'mod.clientes'], ['cxc', 'Cuentas por cobrar', 'mod.cxc'],
+    ['-', 'Ventas y cobros', null], ['ventas', 'Ventas', 'mod.ventas'], ['clientes', 'Clientes y crédito', 'mod.clientes'], ['cxc', 'Cuentas por cobrar', 'mod.cxc'], ['cashea', 'Cashea', 'mod.cxc'],
     ['-', 'Finanzas', null], ['cuentas', 'Bancos y cajas', 'mod.cuentas'], ['finanzas', 'Análisis financiero', 'mod.finanzas'], ['reportes', 'Reportes', 'mod.reportes'], ['parametros', 'Parámetros', 'mod.parametros']
   ];
   // Iconos de línea (estilo Lucide, trazo 1.75) para el menú; cada uno es el contenido de un <svg> de 24×24
@@ -280,6 +280,7 @@ window.Abasto = (() => {
     cxp: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/><path d="M7 15h4"/>',
     ventas: '<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
     clientes: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0113 0"/><path d="M16 4.5a3.5 3.5 0 010 7"/><path d="M18 14.2A6.5 6.5 0 0121.5 20"/>',
+    cashea: '<rect x="2" y="6" width="20" height="13" rx="2"/><path d="M2 10h20"/><path d="M6 15h3"/><path d="M15 14.5l1.5 1.5 3-3"/>',
     cxc: '<path d="M12 2v20"/><path d="M17 6H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>',
     cuentas: '<path d="M3 10l9-6 9 6"/><path d="M5 10v8M9.5 10v8M14.5 10v8M19 10v8"/><path d="M3 21h18"/>',
     finanzas: '<path d="M4 20V4"/><path d="M4 20h16"/><rect x="7" y="11" width="3" height="6" rx=".5"/><rect x="12" y="7" width="3" height="10" rx=".5"/><rect x="17" y="13" width="3" height="4" rx=".5"/>',
@@ -317,7 +318,7 @@ window.Abasto = (() => {
     const sinAcceso = reqPerm && !can(reqPerm);
     const vista = sinAcceso ? async (r) => { r.innerHTML = '<div class="card"><h2>Sin acceso a este módulo</h2><p class="muted">Tu rol (' + e(A.S.user.rol) + ') no incluye este módulo. Si lo necesitas, pídele al administrador que lo active en Parámetros › Roles y permisos.</p></div>'; } : (A.vistas[v] || A.vistas.inicio);
     const navPrev = document.getElementById('nav'), navTop = navPrev ? navPrev.scrollTop : 0; // el menú se redibuja en cada pantalla: conservar dónde estaba
-    root.innerHTML = `<div id="app"><nav id="nav"><div class="marca">${A.S.empresa.logo ? `<img src="${A.S.empresa.logo}" alt="" style="max-width:100%;max-height:56px;display:block;margin-bottom:6px">` : '🛒 '}${e(A.S.empresa.nombre || 'Abasto Cloud')}</div>${NAV.map(([k, l, p]) => k === '-' ? `<div class="sep">${e(l)}</div>` : (p && !can(p) ? '' : `<a href="#/${k}" class="${k === v ? 'act' : ''}">${ico(k)}<span>${e(l)}</span></a>`)).join('')}
+    root.innerHTML = `<div id="app"><nav id="nav"><div class="marca">${A.S.empresa.logo ? `<img src="${A.S.empresa.logo}" alt="" style="max-width:100%;max-height:56px;display:block;margin-bottom:6px">` : '🛒 '}${e(A.S.empresa.nombre || 'Abasto Cloud')}</div>${NAV.map(([k, l, p]) => k === '-' ? `<div class="sep">${e(l)}</div>` : ((p && !can(p)) || (k === 'cashea' && !A.S.cashea) ? '' : `<a href="#/${k}" class="${k === v ? 'act' : ''}">${ico(k)}<span>${e(l)}</span></a>`)).join('')}
       <div class="sep">Sesión</div><a href="#" data-salir>${ico('salir')}<span>Salir (${e(A.S.user.usuario)})</span></a></nav>
       <div id="main"><div class="topbar"><button class="btn" id="menu-btn">☰</button><div class="chips" id="chips"></div><span class="muted">${e(A.S.user.nombre)} · ${e(A.S.user.rol)}</span></div><div id="vista"><div class="empty">Cargando…</div></div></div></div>`;
     pintarChips();

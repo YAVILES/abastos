@@ -7,7 +7,7 @@ const err = (status, msg) => { throw new HttpError(status, msg); };
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const r4 = (n) => Math.round((Number(n) + Number.EPSILON) * 10000) / 10000;
 const MONEDAS = ['USD', 'VES', 'EUR'];
-const MEDIOS = ['efectivo', 'pago_movil', 'transferencia', 'punto', 'credito'];
+const MEDIOS = ['efectivo', 'pago_movil', 'transferencia', 'punto', 'credito', 'cashea'];
 
 function audit(usuario, accion, entidad, ref, detalle) {
   D.run('INSERT INTO auditoria(fecha,usuario,accion,entidad,ref,detalle) VALUES(?,?,?,?,?,?)',
@@ -70,6 +70,12 @@ function movimiento(producto_id, tipo, cantidad, costo, motivo, ref_tipo, ref_id
   return { id, costo: r.costo, costo_prom: r.prom, saldo_cant: r.sq, saldo_valor: r.sv };
 }
 const mov = (...a) => movimiento(...a).id;
+// Precio de la unidad de compra (caja, bulto…) al mayor: precio de venta × unidades por caja, menos el descuento al mayor del producto.
+// Sale siempre del precio vigente, sea fijo o calculado por margen. 0 = el producto no se vende al mayor.
+function precioMayor(p) {
+  if (p.descuento_mayor == null || !(p.factor > 1) || !(p.precio_usd > 0)) return 0;
+  return r2(p.precio_usd * p.factor * (1 - p.descuento_mayor / 100));
+}
 // El margen es la utilidad como porcentaje del PRECIO DE VENTA: costo 5,90 con margen 30 % -> 5,90 / 0,70 = 8,43.
 function precioPorMargen(costo, margen) {
   if (!(margen < 100)) err(400, 'El margen debe ser menor a 100 %: es la parte del precio de venta que queda como ganancia');
@@ -108,15 +114,17 @@ function normalizarPagos(pagos, jor) {
   for (const p of pagos || []) {
     const medio = p.medio;
     if (!MEDIOS.includes(medio)) err(400, 'Medio de pago no válido: ' + medio);
-    const moneda = medio === 'credito' ? 'USD' : p.moneda;
+    const fin = medio === 'credito' || medio === 'cashea';   // lo que se financia no entra en el momento: se calcula con el resto
+    const moneda = fin ? 'USD' : p.moneda;
     if (!MONEDAS.includes(moneda)) err(400, 'Moneda de pago no válida');
     const monto = Number(p.monto);
-    if (medio !== 'credito' && !(monto > 0)) err(400, 'Todos los pagos deben tener monto mayor a cero');
+    if (!fin && !(monto > 0)) err(400, 'Todos los pagos deben tener monto mayor a cero');
+    if (medio === 'cashea' && !String(p.referencia || '').trim()) err(400, 'Escribe el código u orden de Cashea: sirve para conciliar la liquidación semanal');
     if (['pago_movil', 'transferencia', 'punto'].includes(medio) && !String(p.referencia || '').trim())
       err(400, `El pago ${medio.replace('_', ' ')} requiere número de referencia`);
     out.push({
-      medio, moneda, monto, referencia: p.referencia || null, cuenta_id: p.cuenta_id || null,
-      tasa: tasaDe(moneda, jor), monto_usd: medio === 'credito' ? 0 : aUSD(monto, moneda, jor)
+      medio, moneda, monto: medio === 'cashea' ? (monto > 0 ? monto : 0) : monto, referencia: p.referencia || null, cuenta_id: p.cuenta_id || null,
+      tasa: tasaDe(moneda, jor), monto_usd: fin ? 0 : aUSD(monto, moneda, jor)
     });
   }
   return out;
@@ -165,10 +173,10 @@ function crearVenta(o) {
     // Venta al mayor: se vende por unidad de compra (caja, bulto…); el inventario siempre se mueve en unidades de venta.
     const mayor = it.unidad === 'mayor';
     if (mayor) {
-      if (!(p.factor > 1) || !(p.precio_mayor_usd > 0)) err(400, `"${p.nombre}" no tiene precio al mayor`);
+      if (!(precioMayor(p) > 0)) err(400, `"${p.nombre}" no tiene precio al mayor`);
       if (!Number.isInteger(cantU)) err(400, `Al mayor "${p.nombre}" se vende por ${p.unidad_compra} completa`);
     }
-    const base = mayor ? p.precio_mayor_usd : p.precio_usd;   // precio por unidad de venta (detal) o por unidad de compra (mayor)
+    const base = mayor ? precioMayor(p) : p.precio_usd;   // precio por unidad de venta (detal) o por unidad de compra (mayor)
     let precioU = base;
     if (it.precio_usd != null && Math.abs(Number(it.precio_usd) - base) > 0.0001) {
       if (!perms.has('precio.cambiar')) err(403, 'No tienes permiso para cambiar precios');
@@ -180,7 +188,7 @@ function crearVenta(o) {
     lineas.push({ p, cant, precio: mayor ? precioU / p.factor : precioU, brutoFijo: mayor ? r4(cantU * precioU) : null, unidad: mayor ? 'mayor' : null, cantU: mayor ? cantU : null });
     porProd.set(p.id, (porProd.get(p.id) || 0) + cant);
   }
-  if (!op.stock_negativo) {
+  {   // el inventario nunca queda en negativo
     for (const [id, cant] of porProd) {
       const disp = disponible(id, pedido_id);
       if (cant > disp + 1e-9) {
@@ -198,11 +206,24 @@ function crearVenta(o) {
 
   // pagos
   const pagos = normalizarPagos(o.pagos, jor);
-  const noCredito = pagos.filter((p) => p.medio !== 'credito');
+  const noCredito = pagos.filter((p) => p.medio !== 'credito' && p.medio !== 'cashea');
   const pagado = r4(noCredito.reduce((a, p) => a + p.monto_usd, 0));
   const hayCredito = pagos.some((p) => p.medio === 'credito');
-  let credito = 0, vuelto = 0;
-  if (hayCredito) {
+  const hayCashea = pagos.some((p) => p.medio === 'cashea');
+  let credito = 0, cashea = 0, vuelto = 0;
+  if (hayCredito && hayCashea) err(400, 'Una venta no puede combinar crédito propio y Cashea');
+  if (hayCashea) {
+    const cfg = D.param('cashea');
+    if (!cfg.activo) err(409, 'Cashea no está activado: actívalo en Parámetros › Cashea');
+    if (pagos.filter((p) => p.medio === 'cashea').length > 1) err(400, 'Solo puede haber una línea de Cashea por venta');
+    // Lo financiado es lo que se indique en la línea de Cashea; si no se indica, es lo que falta de la inicial.
+    const declarado = pagos.find((p) => p.medio === 'cashea').monto;
+    cashea = declarado > 0 ? r2(declarado) : r2(total - pagado);
+    if (cashea <= 0.005) err(400, 'Los pagos ya cubren el total: quita la línea de Cashea');
+    if (Math.abs(pagado + cashea - total) > 0.011) err(400, `La inicial del cliente (${r2(pagado)} USD) más lo que financia Cashea (${cashea} USD) debe sumar el total (${total} USD)`);
+    const inicialMin = r2(total * cfg.inicial_min_pct / 100);
+    if (pagado < inicialMin - 0.005) err(400, `Cashea exige una inicial de al menos ${cfg.inicial_min_pct} % (${inicialMin} USD)`);
+  } else if (hayCredito) {
     credito = r2(total - pagado);
     if (credito <= 0.005) err(400, 'Los pagos ya cubren el total: quita la línea de crédito');
   } else {
@@ -224,6 +245,7 @@ function crearVenta(o) {
     if (!cliente) err(400, 'Identifica al cliente (cédula o RIF) para registrar la venta');
     if (!String(cliente.documento || '').trim()) err(400, `Falta la cédula o RIF de "${cliente.nombre}": complétala para registrar la venta`);
   }
+  if (hayCashea && !cliente) err(400, 'La venta con Cashea requiere un cliente identificado');
   if (hayCredito) {
     if (!cliente) err(400, 'La venta a crédito requiere un cliente identificado');
     if (cliente.estado !== 'activo') err(409, 'Cliente suspendido: no puede comprar a crédito');
@@ -248,7 +270,7 @@ function crearVenta(o) {
       ventaId, l.p.id, l.cant, l.precio, m.costo, l.desc, l.unidad, l.cantU);
   }
   for (const p of pagos) {
-    if (p.medio === 'credito') continue;
+    if (p.medio === 'credito' || p.medio === 'cashea') continue;
     const cuenta = resolverCuentaPago(p.medio, p.moneda, p.cuenta_id);
     D.insert(`INSERT INTO pagos(tipo,venta_id,fecha,medio,moneda,monto,tasa,monto_usd,referencia,cuenta_id,turno_id,usuario,jornada_id)
               VALUES('venta',?,?,?,?,?,?,?,?,?,?,?,?)`, ventaId, D.ahora(), p.medio, p.moneda, p.monto, p.tasa, p.monto_usd,
@@ -269,8 +291,14 @@ function crearVenta(o) {
     D.insert(`INSERT INTO pagos(tipo,venta_id,fecha,medio,moneda,monto,tasa,monto_usd,turno_id,usuario,jornada_id)
               VALUES('venta',?,?,?,?,?,?,?,?,?,?)`, ventaId, D.ahora(), 'credito', 'USD', credito, 1, credito, turno.id, usuario, jor.id);
   }
-  audit(usuario, 'venta_creada', 'venta', ventaId, { numero, total, origen, credito });
-  return { id: ventaId, numero, total_usd: total, vuelto_usd: vuelto, vuelto: vueltoLineas.map((x) => ({ medio: x.medio, moneda: x.moneda, monto: x.monto, referencia: x.referencia })), credito_usd: credito };
+  if (cashea > 0) {
+    const ref = pagos.find((p) => p.medio === 'cashea').referencia;
+    D.insert(`INSERT INTO pagos(tipo,venta_id,fecha,medio,moneda,monto,tasa,monto_usd,referencia,turno_id,usuario,jornada_id)
+              VALUES('venta',?,?,?,?,?,?,?,?,?,?,?)`, ventaId, D.ahora(), 'cashea', 'USD', cashea, 1, cashea, ref, turno.id, usuario, jor.id);
+    D.insert('INSERT INTO cashea_cxc(venta_id,cliente_id,monto_usd,referencia,estado,creado) VALUES(?,?,?,?,?,?)', ventaId, cliente_id || null, cashea, ref, 'pendiente', D.ahora());
+  }
+  audit(usuario, 'venta_creada', 'venta', ventaId, { numero, total, origen, credito, cashea });
+  return { id: ventaId, numero, total_usd: total, vuelto_usd: vuelto, vuelto: vueltoLineas.map((x) => ({ medio: x.medio, moneda: x.moneda, monto: x.monto, referencia: x.referencia })), credito_usd: credito, cashea_usd: cashea };
 }
 
 function anularVenta(id, motivo, usuario) {
@@ -280,6 +308,8 @@ function anularVenta(id, motivo, usuario) {
   if (!String(motivo || '').trim()) err(400, 'Indica el motivo de la anulación');
   const cxc = D.get('SELECT * FROM cxc WHERE venta_id=?', v.id);
   if (cxc && cxc.saldo_usd < cxc.total_usd - 0.005) err(409, 'La venta tiene abonos a crédito: reversa primero los cobros');
+  const casheaFila = D.get('SELECT * FROM cashea_cxc WHERE venta_id=?', v.id);
+  if (casheaFila && casheaFila.estado === 'liquidada') err(409, 'Cashea ya liquidó lo que financió esta venta: no se puede anular');
   const jor = jornadaAbierta();
   const turnoOrig = D.get("SELECT id FROM caja_turnos WHERE id=? AND estado='abierta'", v.turno_id);
   for (const d of D.all('SELECT * FROM venta_detalles WHERE venta_id=?', v.id))
@@ -288,6 +318,7 @@ function anularVenta(id, motivo, usuario) {
     cuentaMov(m.cuenta_id, -m.monto, -m.monto_usd, 'reverso_venta', { ref_tipo: 'venta', ref_id: v.id, usuario, jornada_id: jor && jor.id, turno_id: turnoOrig ? turnoOrig.id : null, nota: 'Anulación ' + v.numero });
   D.run('UPDATE pagos SET anulado=1 WHERE venta_id=?', v.id);
   if (cxc) D.run("UPDATE cxc SET estado='anulada', saldo_usd=0 WHERE id=?", cxc.id);
+  if (casheaFila) D.run("UPDATE cashea_cxc SET estado='anulada' WHERE id=?", casheaFila.id);
   D.run("UPDATE ventas SET estado='anulada', motivo_anulacion=?, anulada_por=?, anulada_en=? WHERE id=?", motivo, usuario, D.ahora(), v.id);
   audit(usuario, 'venta_anulada', 'venta', v.id, { numero: v.numero, motivo });
 }
@@ -301,7 +332,9 @@ function cobrarCxc(cxcId, pagosIn, usuario, turno) {
   const c = D.get('SELECT * FROM cxc WHERE id=?', cxcId);
   if (!c || c.estado === 'anulada') err(404, 'Cuenta por cobrar no encontrada');
   if (c.saldo_usd <= 0.005) err(409, 'La cuenta ya está pagada');
-  const pagos = normalizarPagos(pagosIn, jor).filter((p) => p.medio !== 'credito');
+  const pagosIn2 = normalizarPagos(pagosIn, jor);
+  if (pagosIn2.some((p) => p.medio === 'cashea')) err(400, 'Cashea solo se usa al vender, no para cobrar un crédito');
+  const pagos = pagosIn2.filter((p) => p.medio !== 'credito');
   if (!pagos.length) err(400, 'Indica al menos un pago');
   const total = r4(pagos.reduce((a, p) => a + p.monto_usd, 0));
   if (total > c.saldo_usd + 0.01) err(400, `El cobro (${r2(total)}) excede el saldo (${r2(c.saldo_usd)})`);
@@ -428,7 +461,7 @@ function recibirCompra(id, o, usuario) {
   }
   if (condicion === 'contado') {
     const medio = o.medio || c.medio || 'efectivo';
-    if (!MEDIOS.includes(medio) || medio === 'credito') err(400, 'Medio de pago no válido');
+    if (!MEDIOS.includes(medio) || medio === 'credito' || medio === 'cashea') err(400, 'Medio de pago no válido');
     if (medio !== 'efectivo' && !String(o.referencia || c.referencia || '').trim()) err(400, 'El pago bancario requiere referencia');
     const cuenta = resolverCuentaPago(medio, c.moneda, o.cuenta_id || c.cuenta_id);
     cuentaMov(cuenta.id, -c.total_moneda, -totalUSD, 'compra', { referencia: o.referencia || c.referencia, ref_tipo: 'compra', ref_id: c.id, usuario, jornada_id: jor.id });
@@ -738,7 +771,7 @@ function generarConteo(usuario, responsable, _ignorado, regenerar) {
 
 module.exports = {
   HttpError, err, r2, r4, MONEDAS, MEDIOS, audit, jornadaAbierta, requireJornada, ultimaTasa, tasaDe, aUSD, deUSD,
-  stockDe, reservadoDe, disponible, mov, movimiento, precioPorMargen, saldoCuenta, cuentaMov, cuentaEfectivo, resolverCuentaPago,
+  stockDe, reservadoDe, disponible, mov, movimiento, precioPorMargen, precioMayor, saldoCuenta, cuentaMov, cuentaEfectivo, resolverCuentaPago,
   crearVenta, anularVenta, turnoAbiertoDe, cobrarCxc, pagarCxp, guardarCompra, enviarCompra, recibirCompra, anularCompra, sugerenciasCompra, analisisCompras,
   resumenTurno, barrerReservas, liberarReservas, semaforo, clasificarABC, generarConteo, cuotasDelDia, leerArrastre
 };

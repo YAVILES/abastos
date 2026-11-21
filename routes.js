@@ -119,7 +119,7 @@ const SQL_PRODUCTO = `SELECT p.*, c.nombre AS categoria, pr.nombre AS proveedor,
 function conStock(p) {
   if (!p) return p;
   const reservado = L.reservadoDe(p.id);
-  return { ...p, reservado, disponible: r2(p.stock - reservado) };
+  return { ...p, precio_mayor_usd: L.precioMayor(p), reservado, disponible: r2(p.stock - reservado) };
 }
 function guardarBarras(productoId, codigos) {
   if (!Array.isArray(codigos)) return;
@@ -154,7 +154,7 @@ staff('GET', '/api/me', null, ({ user, perms }) => {
   const lic = P.licencia(slug);
   return {
     usuario: user, permisos: [...perms], jornada: L.jornadaAbierta(), turno: L.turnoAbiertoDe(user.id),
-    empresa: D.param('empresa'), empresa_codigo: slug, lector: D.param('lector'),
+    empresa: D.param('empresa'), empresa_codigo: slug, lector: D.param('lector'), cashea: !!D.param('cashea').activo, imprimir_ticket: D.param('operacion').imprimir_ticket !== false,
     licencia: { estado: lic.estado, vence: lic.vence, dias_restantes: lic.dias_restantes, plan: lic.plan },
     reconocimiento: { disponible: !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN), usados_mes: P.usoMes(slug), limite_mes: lic.max_reconocimientos }
   };
@@ -245,10 +245,10 @@ staff('PUT', '/api/usuarios/:id', 'usuarios.editar', ({ params, body, user }) =>
 // =====================================================================
 // PARÁMETROS, CUENTAS, CAJAS, MEDIOS DE PAGO APP
 // =====================================================================
-staff('GET', '/api/parametros', null, () => ({ empresa: D.param('empresa'), abc: D.param('abc'), operacion: D.param('operacion'), lector: D.param('lector'), tasas: D.param('tasas') }));
+staff('GET', '/api/parametros', null, () => ({ empresa: D.param('empresa'), abc: D.param('abc'), operacion: D.param('operacion'), lector: D.param('lector'), tasas: D.param('tasas'), cashea: D.param('cashea') }));
 staff('PUT', '/api/parametros/:clave', 'parametros.editar', ({ params, body, user }) => {
   const clave = params.clave;
-  if (!['empresa', 'abc', 'operacion', 'lector', 'tasas'].includes(clave)) err(404, 'Parámetro desconocido');
+  if (!['empresa', 'abc', 'operacion', 'lector', 'tasas', 'cashea'].includes(clave)) err(404, 'Parámetro desconocido');
   const antes = D.param(clave);
   const nuevo = { ...antes };
   for (const k of Object.keys(antes)) if (body[k] !== undefined) nuevo[k] = typeof antes[k] === 'number' ? num(body[k], `Valor inválido en ${k}`, 0) : typeof antes[k] === 'boolean' ? !!body[k] : String(body[k]);
@@ -257,6 +257,10 @@ staff('PUT', '/api/parametros/:clave', 'parametros.editar', ({ params, body, use
     if (nuevo.compra_cobertura_max_dias < 7 || nuevo.compra_cobertura_max_dias > 365) err(400, 'La cobertura máxima debe estar entre 7 y 365 días');
   }
   if (clave === 'empresa' && nuevo.logo && (!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(nuevo.logo) || nuevo.logo.length > 300000)) err(400, 'El logo debe ser una imagen PNG, JPG o WebP liviana');
+  if (clave === 'cashea') {
+    if (nuevo.comision_pct < 0 || nuevo.comision_pct >= 100) err(400, 'La comisión de Cashea debe estar entre 0 y 100 %');
+    if (nuevo.inicial_min_pct < 0 || nuevo.inicial_min_pct >= 100) err(400, 'La inicial mínima debe estar entre 0 y 100 %');
+  }
   if (clave === 'lector') {
     if (!['teclado', 'serial', 'camara'].includes(nuevo.tipo)) err(400, 'Tipo de lector no válido');
     if (!['Enter', 'Tab', 'ninguno'].includes(nuevo.sufijo)) err(400, 'El carácter final debe ser Enter, Tab o ninguno');
@@ -413,6 +417,42 @@ staff('GET', '/api/tasas', null, ({ query }) => {
   return { hoy, tasa_hoy: D.get('SELECT * FROM tasas_cambio WHERE fecha=?', hoy) || null, ultima: D.get('SELECT * FROM tasas_cambio WHERE fecha<=? ORDER BY fecha DESC LIMIT 1', hoy) || null,
     jornada_fecha: j ? j.fecha : null, desactualizada: !!(j && j.fecha < hoy), lista, fechas_sin_tasa: faltan, auto_bcv: D.param('tasas').auto_bcv, bcv: BCV.estado() };
 });
+// =====================================================================
+// CASHEA: lo financiado queda por cobrar a Cashea y se liquida una vez por semana
+// =====================================================================
+staff('GET', '/api/cashea', null, () => {
+  const pendientes = D.all(`SELECT c.id, c.monto_usd, c.referencia, c.creado, v.numero AS venta, v.total_usd, cl.nombre AS cliente
+      FROM cashea_cxc c JOIN ventas v ON v.id=c.venta_id LEFT JOIN clientes cl ON cl.id=c.cliente_id WHERE c.estado='pendiente' ORDER BY c.id`);
+  const hoy = D.hoy();
+  for (const p of pendientes) p.dias = Math.max(0, Math.round((Date.parse(hoy) - Date.parse(String(p.creado).slice(0, 10))) / 86400000));
+  const liquidaciones = D.all(`SELECT l.*, cu.nombre AS cuenta, (SELECT COUNT(*) FROM cashea_cxc c WHERE c.liquidacion_id=l.id) AS ventas FROM cashea_liquidaciones l JOIN cuentas cu ON cu.id=l.cuenta_id ORDER BY l.id DESC LIMIT 40`);
+  return { param: D.param('cashea'), pendientes, total_pendiente_usd: r2(pendientes.reduce((a, p) => a + p.monto_usd, 0)), liquidaciones };
+});
+staff('POST', '/api/cashea/liquidar', 'cuentas.operar', ({ body, user }) => D.tx(() => {
+  const jor = L.requireJornada();
+  const ids = [...new Set((Array.isArray(body.ids) ? body.ids : []).map(Number).filter(Boolean))];
+  if (!ids.length) err(400, 'Marca las ventas que Cashea te liquidó');
+  const filas = ids.map((id) => D.get("SELECT * FROM cashea_cxc WHERE id=? AND estado='pendiente'", id));
+  if (filas.some((f) => !f)) err(409, 'Alguna venta ya fue liquidada o anulada: recarga la lista');
+  const cuenta = D.get("SELECT * FROM cuentas WHERE id=? AND activo=1 AND tipo<>'caja'", body.cuenta_id);
+  if (!cuenta) err(400, 'Elige el banco donde Cashea te depositó');
+  const recibido = num(body.monto_recibido, 'Indica el monto que Cashea te depositó', 0.01);
+  const brutoUsd = r2(filas.reduce((a, f) => a + f.monto_usd, 0));
+  const bruto = cuenta.moneda === 'USD' ? brutoUsd : r2(L.deUSD(brutoUsd, cuenta.moneda, jor));
+  let comision = r2(bruto - recibido);
+  if (comision < -0.01) err(400, `Recibiste más de lo que financió Cashea en las ventas marcadas (${bruto} ${cuenta.moneda}): revisa el monto o la selección`);
+  if (comision < 0) comision = 0;
+  const id = D.insert(`INSERT INTO cashea_liquidaciones(fecha,cuenta_id,moneda,bruto_usd,bruto,recibido,comision,referencia,nota,usuario,jornada_id,creado) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+    D.hoy(), cuenta.id, cuenta.moneda, brutoUsd, bruto, recibido, comision, s(body.referencia), s(body.nota), user.usuario, jor.id, D.ahora());
+  // La cuenta recibe lo financiado completo y la comisión de Cashea se registra como gasto desde la misma cuenta: el saldo queda igual a lo depositado.
+  L.cuentaMov(cuenta.id, bruto, brutoUsd, 'cashea', { referencia: s(body.referencia), ref_tipo: 'cashea', ref_id: id, usuario: user.usuario, jornada_id: jor.id, nota: `Liquidación Cashea #${id}` });
+  let comisionUsd = 0;
+  if (comision > 0.004) comisionUsd = F.registrarGasto({ categoria: 'Comisiones Cashea', descripcion: `Comisión de la liquidación Cashea #${id}`, beneficiario: 'Cashea', moneda: cuenta.moneda, monto: comision, cuenta_id: cuenta.id, referencia: s(body.referencia), usuario: user.usuario }).monto_usd;
+  D.run('UPDATE cashea_liquidaciones SET comision_usd=? WHERE id=?', comisionUsd, id);
+  for (const f of filas) D.run("UPDATE cashea_cxc SET estado='liquidada', liquidacion_id=? WHERE id=?", id, f.id);
+  L.audit(user.usuario, 'cashea_liquidada', 'cashea', id, { ventas: filas.length, bruto_usd: brutoUsd, recibido, comision, moneda: cuenta.moneda });
+  return { id, ventas: filas.length, bruto_usd: brutoUsd, bruto, recibido, comision, comision_usd: comisionUsd };
+}));
 staff('POST', '/api/tasas/bcv', 'jornada.gestionar', async ({ user }) => {
   let datos;
   try { datos = await BCV.consultar({ forzar: true }); } catch (e) { err(502, 'No se pudo consultar al BCV: ' + e.message); }
@@ -510,12 +550,13 @@ function datosProducto(b, previo) {
   let precio = b.precio_usd != null ? num(b.precio_usd, 'Precio inválido', 0) : (previo?.precio_usd ?? 0);
   if (!fijo) precio = L.precioPorMargen(costo, margen);
   const factor = b.factor != null ? num(b.factor, 'El factor de conversión debe ser mayor a 0', 0.0001) : (previo?.factor ?? 1);
-  // Precio al mayor: por unidad de compra (caja, bulto…). 0 = no se vende al mayor.
-  const mayor = b.precio_mayor_usd != null && b.precio_mayor_usd !== '' ? num(b.precio_mayor_usd, 'Precio al mayor inválido', 0) : (previo?.precio_mayor_usd ?? 0);
-  if (mayor > 0 && !(factor > 1)) err(400, 'Para vender al mayor indica cuántas unidades trae la unidad de compra (más de 1)');
-  if (mayor > 0 && precio > 0 && mayor > precio * factor + 0.005) err(400, `El precio al mayor (${mayor}) no puede superar ${r2(precio * factor)}: es el precio al detal de ${factor} unidades`);
+  // Descuento al mayor: % sobre el precio de venta de la caja completa. Vacío = no se vende al mayor; 0 = por caja sin descuento.
+  const descRaw = b.descuento_mayor !== undefined ? b.descuento_mayor : (previo?.descuento_mayor ?? null);
+  const descuento = descRaw === null || descRaw === '' ? null : num(descRaw, 'Descuento al mayor inválido', 0);
+  if (descuento !== null && descuento >= 100) err(400, 'El descuento al mayor debe ser menor a 100 %');
+  if (descuento !== null && !(factor > 1)) err(400, 'Para vender al mayor indica cuántas unidades trae la unidad de compra (más de 1)');
   return {
-    nombre, costo, margen, fijo, precio, factor, mayor,
+    nombre, costo, margen, fijo, precio, factor, descuento,
     categoria_id: b.categoria_id !== undefined ? (b.categoria_id || null) : (previo?.categoria_id ?? null),
     marca: b.marca !== undefined ? s(b.marca) : (previo?.marca ?? null), presentacion: b.presentacion !== undefined ? s(b.presentacion) : (previo?.presentacion ?? null),
     uc: s(b.unidad_compra) || previo?.unidad_compra || 'unidad', uv: s(b.unidad_venta) || previo?.unidad_venta || 'unidad',
@@ -535,8 +576,8 @@ staff('POST', '/api/productos', 'productos.editar', ({ body, user }) => D.tx(() 
   let codigo = s(body.codigo);
   if (!codigo) codigo = D.siguiente('producto', 'PROD', 4);
   if (D.get('SELECT id FROM productos WHERE codigo=?', codigo)) err(409, 'El código interno ya existe');
-  const id = D.insert(`INSERT INTO productos(codigo,nombre,categoria_id,marca,presentacion,unidad_compra,unidad_venta,factor,costo_usd,precio_usd,precio_mayor_usd,margen,precio_fijo,stock_min,stock_max,ubicacion,proveedor_id,imagen,creado)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, codigo, d.nombre, d.categoria_id, d.marca, d.presentacion, d.uc, d.uv, d.factor, d.costo, d.precio, d.mayor, d.margen, d.fijo, d.smin, d.smax, d.ubicacion, d.proveedor_id, d.imagen, D.ahora());
+  const id = D.insert(`INSERT INTO productos(codigo,nombre,categoria_id,marca,presentacion,unidad_compra,unidad_venta,factor,costo_usd,precio_usd,descuento_mayor,margen,precio_fijo,stock_min,stock_max,ubicacion,proveedor_id,imagen,creado)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, codigo, d.nombre, d.categoria_id, d.marca, d.presentacion, d.uc, d.uv, d.factor, d.costo, d.precio, d.descuento, d.margen, d.fijo, d.smin, d.smax, d.ubicacion, d.proveedor_id, d.imagen, D.ahora());
   guardarBarras(id, body.codigos || (body.codigo_barra ? [body.codigo_barra] : []));
   const ini = Number(body.stock_inicial) || 0;
   if (ini > 0) L.mov(id, 'inventario_inicial', ini, d.costo, 'Inventario inicial', 'producto', id, user.usuario, L.jornadaAbierta()?.id);
@@ -547,14 +588,14 @@ staff('PUT', '/api/productos/:id', 'productos.editar', ({ params, body, user, pe
   const p = D.get('SELECT * FROM productos WHERE id=?', params.id);
   if (!p) err(404, 'Producto no encontrado');
   const d = datosProducto(body, p);
-  const cambiaPrecio = d.precio !== p.precio_usd || d.costo !== p.costo_usd || d.margen !== p.margen || d.fijo !== p.precio_fijo || d.mayor !== p.precio_mayor_usd;
+  const cambiaPrecio = d.precio !== p.precio_usd || d.costo !== p.costo_usd || d.margen !== p.margen || d.fijo !== p.precio_fijo || d.descuento !== p.descuento_mayor;
   if (cambiaPrecio && !perms.has('precio.cambiar')) err(403, 'No tienes permiso para cambiar precios, costos o márgenes');
-  D.run(`UPDATE productos SET nombre=?,categoria_id=?,marca=?,presentacion=?,unidad_compra=?,unidad_venta=?,factor=?,costo_usd=?,precio_usd=?,precio_mayor_usd=?,margen=?,precio_fijo=?,stock_min=?,stock_max=?,ubicacion=?,proveedor_id=?,imagen=?,activo=? WHERE id=?`,
-    d.nombre, d.categoria_id, d.marca, d.presentacion, d.uc, d.uv, d.factor, d.costo, d.precio, d.mayor, d.margen, d.fijo, d.smin, d.smax, d.ubicacion, d.proveedor_id, d.imagen, body.activo == null ? p.activo : bool(body.activo), p.id);
+  D.run(`UPDATE productos SET nombre=?,categoria_id=?,marca=?,presentacion=?,unidad_compra=?,unidad_venta=?,factor=?,costo_usd=?,precio_usd=?,descuento_mayor=?,margen=?,precio_fijo=?,stock_min=?,stock_max=?,ubicacion=?,proveedor_id=?,imagen=?,activo=? WHERE id=?`,
+    d.nombre, d.categoria_id, d.marca, d.presentacion, d.uc, d.uv, d.factor, d.costo, d.precio, d.descuento, d.margen, d.fijo, d.smin, d.smax, d.ubicacion, d.proveedor_id, d.imagen, body.activo == null ? p.activo : bool(body.activo), p.id);
   if (body.codigos) guardarBarras(p.id, body.codigos);
   // un cambio manual del costo queda en el kardex como revalorización: el saldo pasa a valer al costo nuevo
   if (d.costo !== p.costo_usd) L.mov(p.id, 'revalorizacion', 0, d.costo, 'Cambio manual del costo', 'producto', p.id, user.usuario, L.jornadaAbierta()?.id);
-  if (cambiaPrecio) L.audit(user.usuario, 'cambio_precio_costo', 'producto', p.id, { antes: { costo: p.costo_usd, precio: p.precio_usd, mayor: p.precio_mayor_usd, margen: p.margen }, despues: { costo: d.costo, precio: d.precio, mayor: d.mayor, margen: d.margen } });
+  if (cambiaPrecio) L.audit(user.usuario, 'cambio_precio_costo', 'producto', p.id, { antes: { costo: p.costo_usd, precio: p.precio_usd, desc_mayor: p.descuento_mayor, margen: p.margen }, despues: { costo: d.costo, precio: d.precio, desc_mayor: d.descuento, margen: d.margen } });
   return { ok: true };
 }));
 // Kardex valorizado al costo promedio: cada fila trae el costo con el que se valoró el movimiento y el saldo (existencia, costo promedio y valor) que dejó
@@ -682,13 +723,15 @@ function analizarInventarioExcel(filas, perms) {
       if (ex && tocados.has(ex.id)) throw new Error('El producto «' + ex.nombre + '» ya aparece en la fila ' + tocados.get(ex.id));
       const costo = numCelda(v.costo_usd, 'Costo'), precio = numCelda(v.precio_venta_usd, 'Precio de venta'), margen = numCelda(v.margen_utilidad, 'Margen');
       const factor = numCelda(v.factor_conversion, 'Unidades por unidad de compra'), smin = numCelda(v.stock_minimo, 'Stock mínimo'), smax = numCelda(v.stock_maximo, 'Stock máximo');
-      const stock = numCelda(v.stock_actual, 'Existencia inicial'), fijo = siNoCelda(v.precio_fijo);
+      const stock = numCelda(v.stock_actual, 'Existencia inicial'), fijo = siNoCelda(v.precio_fijo), descMayor = numCelda(v.descuento_mayor, 'Descuento al mayor');
       if (factor !== null && factor <= 0) throw new Error('«Unidades por unidad de compra» debe ser mayor a 0');
       if (margen !== null && margen >= 100) throw new Error('El margen debe ser menor a 100 %');
+      if (descMayor !== null && (descMayor < 0 || descMayor >= 100)) throw new Error('El descuento al mayor debe estar entre 0 y menos de 100 %');
+      if (descMayor !== null && !((factor !== null ? factor : (ex ? ex.factor : 1)) > 1)) throw new Error('Para dar descuento al mayor indica las «Unidades por unidad de compra» (más de 1)');
       const dat = { nombre };
       if (v.marca) dat.marca = v.marca; if (v.presentacion) dat.presentacion = v.presentacion; if (v.unidad_compra) dat.unidad_compra = v.unidad_compra; if (v.unidad_venta) dat.unidad_venta = v.unidad_venta;
       if (factor !== null) dat.factor = factor; if (smin !== null) dat.stock_min = smin; if (smax !== null) dat.stock_max = smax; if (v.ubicacion) dat.ubicacion = v.ubicacion;
-      if (costo !== null) dat.costo_usd = costo; if (margen !== null) dat.margen = margen; if (fijo !== null) dat.precio_fijo = fijo;
+      if (costo !== null) dat.costo_usd = costo; if (margen !== null) dat.margen = margen; if (fijo !== null) dat.precio_fijo = fijo; if (descMayor !== null) dat.descuento_mayor = descMayor;
       if (precio !== null) dat.precio_usd = precio;
       let carga = 0, accion;
       if (!ex) {
@@ -768,14 +811,14 @@ staff('POST', '/api/inventario/inicial/importar', 'productos.editar', ({ body, u
         if (it.accion === 'crear') {
           limiteProductos();
           const codigo = it.interno || D.siguiente('producto', 'PROD', 4);
-          id = D.insert('INSERT INTO productos(codigo,nombre,categoria_id,marca,presentacion,unidad_compra,unidad_venta,factor,costo_usd,precio_usd,margen,precio_fijo,stock_min,stock_max,ubicacion,proveedor_id,creado) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-            codigo, d.nombre, d.categoria_id, d.marca, d.presentacion, d.uc, d.uv, d.factor, d.costo, d.precio, d.margen, d.fijo, d.smin, d.smax, d.ubicacion, d.proveedor_id, D.ahora());
+          id = D.insert('INSERT INTO productos(codigo,nombre,categoria_id,marca,presentacion,unidad_compra,unidad_venta,factor,costo_usd,precio_usd,descuento_mayor,margen,precio_fijo,stock_min,stock_max,ubicacion,proveedor_id,creado) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            codigo, d.nombre, d.categoria_id, d.marca, d.presentacion, d.uc, d.uv, d.factor, d.costo, d.precio, d.descuento, d.margen, d.fijo, d.smin, d.smax, d.ubicacion, d.proveedor_id, D.ahora());
           if (it.barra) guardarBarras(id, [it.barra]);
           res.creados++;
         } else {
           id = it.ex.id;
-          D.run('UPDATE productos SET nombre=?,categoria_id=?,marca=?,presentacion=?,unidad_compra=?,unidad_venta=?,factor=?,costo_usd=?,precio_usd=?,margen=?,precio_fijo=?,stock_min=?,stock_max=?,ubicacion=?,proveedor_id=? WHERE id=?',
-            d.nombre, d.categoria_id, d.marca, d.presentacion, d.uc, d.uv, d.factor, d.costo, d.precio, d.margen, d.fijo, d.smin, d.smax, d.ubicacion, d.proveedor_id, id);
+          D.run('UPDATE productos SET nombre=?,categoria_id=?,marca=?,presentacion=?,unidad_compra=?,unidad_venta=?,factor=?,costo_usd=?,precio_usd=?,descuento_mayor=?,margen=?,precio_fijo=?,stock_min=?,stock_max=?,ubicacion=?,proveedor_id=? WHERE id=?',
+            d.nombre, d.categoria_id, d.marca, d.presentacion, d.uc, d.uv, d.factor, d.costo, d.precio, d.descuento, d.margen, d.fijo, d.smin, d.smax, d.ubicacion, d.proveedor_id, id);
           if (it.barra && !D.get('SELECT 1 AS x FROM codigos_barra WHERE codigo=?', it.barra)) D.run('INSERT INTO codigos_barra(codigo,producto_id,principal) VALUES(?,?,0)', it.barra, id);
           if (d.costo !== it.ex.costo_usd && !(it.carga > 0)) L.mov(id, 'revalorizacion', 0, d.costo, 'Cambio de costo por carga desde Excel', 'producto', id, user.usuario, null);
           res.actualizados++;
@@ -803,7 +846,7 @@ staff('POST', '/api/inventario/ajuste', 'inventario.ajustar', ({ body, user }) =
   if (!['ajuste', 'merma', 'consumo_interno'].includes(body.tipo)) err(400, 'Tipo no válido');
   const motivo = req(body.motivo, 'Indica el motivo');
   if (body.tipo !== 'ajuste' && cant > 0) err(400, 'Mermas y consumos deben ser cantidades negativas');
-  if (L.stockDe(p.id) + cant < 0 && !D.param('operacion').stock_negativo) err(409, 'El ajuste dejaría el stock en negativo');
+  if (L.stockDe(p.id) + cant < 0) err(409, 'El ajuste dejaría el stock en negativo');
   const id = L.mov(p.id, body.tipo, cant, p.costo_usd, motivo, 'ajuste', null, user.usuario, L.jornadaAbierta()?.id);
   L.audit(user.usuario, 'ajuste_inventario', 'producto', p.id, { tipo: body.tipo, cantidad: cant, motivo });
   return { id };
@@ -979,6 +1022,30 @@ staff('GET', '/api/cxc', null, ({ query }) => {
   return D.all(`SELECT x.*, c.nombre AS cliente, v.numero AS venta, (x.estado IN ('pendiente','abonada') AND x.vence<'${D.hoy()}') AS vencida
                 FROM cxc x JOIN clientes c ON c.id=x.cliente_id LEFT JOIN ventas v ON v.id=x.venta_id ${w.length ? 'WHERE ' + w.join(' AND ') : ''} ORDER BY x.vence, x.id LIMIT 500`, ...a);
 });
+// Historial de cuentas por cobrar: todas las facturas a crédito (abiertas, pagadas y anuladas) con lo cobrado y la fecha del último cobro.
+staff('GET', '/api/cxc/historial', null, ({ query }) => {
+  const w = [], a = [];
+  if (query.estado === 'abiertas') w.push("x.estado IN ('pendiente','abonada')");
+  else if (['pagada', 'anulada', 'pendiente', 'abonada'].includes(query.estado)) { w.push('x.estado=?'); a.push(query.estado); }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(query.desde || '')) { w.push('substr(x.creado,1,10)>=?'); a.push(query.desde); }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(query.hasta || '')) { w.push('substr(x.creado,1,10)<=?'); a.push(query.hasta); }
+  if (query.cliente_id) { w.push('x.cliente_id=?'); a.push(Number(query.cliente_id)); }
+  if (query.q) { w.push('(c.nombre LIKE ? OR c.documento LIKE ? OR v.numero LIKE ?)'); a.push(like(query.q), like(query.q), like(query.q)); }
+  const filas = D.all(`SELECT x.*, c.nombre AS cliente, c.documento, v.numero AS venta,
+      COALESCE((SELECT SUM(p.monto_usd) FROM pagos p WHERE p.cxc_id=x.id AND p.tipo='cobro' AND p.anulado=0),0) AS cobrado_usd,
+      (SELECT MAX(p.fecha) FROM pagos p WHERE p.cxc_id=x.id AND p.tipo='cobro' AND p.anulado=0) AS ultimo_cobro,
+      (SELECT COUNT(*) FROM pagos p WHERE p.cxc_id=x.id AND p.tipo='cobro' AND p.anulado=0) AS cobros,
+      (x.estado IN ('pendiente','abonada') AND x.vence<'${D.hoy()}') AS vencida
+    FROM cxc x JOIN clientes c ON c.id=x.cliente_id LEFT JOIN ventas v ON v.id=x.venta_id ${w.length ? 'WHERE ' + w.join(' AND ') : ''} ORDER BY x.id DESC LIMIT 1000`, ...a);
+  const vivas = filas.filter((f) => f.estado !== 'anulada');
+  return { filas, totales: { emitido_usd: r2(vivas.reduce((t, f) => t + f.total_usd, 0)), cobrado_usd: r2(vivas.reduce((t, f) => t + f.cobrado_usd, 0)), saldo_usd: r2(vivas.reduce((t, f) => t + f.saldo_usd, 0)), n: filas.length } };
+});
+staff('GET', '/api/cxc/:id', null, ({ params }) => {
+  const x = D.get(`SELECT x.*, c.nombre AS cliente, c.documento, c.telefono, v.numero AS venta, v.fecha AS venta_fecha, v.total_usd AS venta_total FROM cxc x JOIN clientes c ON c.id=x.cliente_id LEFT JOIN ventas v ON v.id=x.venta_id WHERE x.id=?`, params.id);
+  if (!x) err(404, 'Cuenta por cobrar no encontrada');
+  const cobros = D.all("SELECT fecha, medio, moneda, monto, monto_usd, referencia, usuario, anulado FROM pagos WHERE cxc_id=? AND tipo='cobro' ORDER BY id", x.id);
+  return { ...x, cobros, cobrado_usd: r2(cobros.filter((c) => !c.anulado).reduce((t, c) => t + c.monto_usd, 0)) };
+});
 staff('POST', '/api/cxc/:id/cobrar', 'cobros.crear', ({ params, body, user }) => D.tx(() => L.cobrarCxc(Number(params.id), body.pagos, user.usuario, L.turnoAbiertoDe(user.id))));
 staff('GET', '/api/cxp', null, ({ query }) => {
   const w = [], a = [];
@@ -1091,10 +1158,13 @@ staff('GET', '/api/ventas', null, ({ query }) => {
   return D.all(`SELECT v.*, c.nombre AS cliente FROM ventas v LEFT JOIN clientes c ON c.id=v.cliente_id WHERE ${w.join(' AND ')} ORDER BY v.id DESC LIMIT 500`, ...a);
 });
 staff('GET', '/api/ventas/:id', null, ({ params }) => {
-  const v = D.get('SELECT v.*, c.nombre AS cliente FROM ventas v LEFT JOIN clientes c ON c.id=v.cliente_id WHERE v.id=?', params.id);
+  const v = D.get('SELECT v.*, c.nombre AS cliente, c.documento AS cliente_documento FROM ventas v LEFT JOIN clientes c ON c.id=v.cliente_id WHERE v.id=?', params.id);
   if (!v) err(404, 'Venta no encontrada');
-  return { ...v, items: D.all('SELECT d.*, p.nombre, p.codigo FROM venta_detalles d JOIN productos p ON p.id=d.producto_id WHERE d.venta_id=?', v.id),
-    pagos: D.all('SELECT * FROM pagos WHERE venta_id=? ORDER BY id', v.id) };
+  const pagos = D.all('SELECT * FROM pagos WHERE venta_id=? ORDER BY id', v.id);
+  // tasa del momento de la venta: la de sus pagos en bolívares y, si no hubo, la del día operativo
+  const pv = pagos.find((x) => x.moneda === 'VES' && x.tasa > 0);
+  const tasa = pv ? pv.tasa : ((D.get('SELECT tasa_usd_ves FROM jornadas WHERE id=?', v.jornada_id) || {}).tasa_usd_ves || null);
+  return { ...v, tasa_usd_ves: tasa, items: D.all('SELECT d.*, p.nombre, p.codigo FROM venta_detalles d JOIN productos p ON p.id=d.producto_id WHERE d.venta_id=?', v.id), pagos };
 });
 staff('POST', '/api/ventas', 'ventas.crear', ({ body, user, perms }) => D.tx(() =>
   L.crearVenta({ usuario: user.usuario, perms, cliente_id: body.cliente_id || null, items: body.items, pagos: body.pagos, vuelto: body.vuelto, descuento_pct: body.descuento_pct, forzar: !!body.forzar, turno: L.turnoAbiertoDe(user.id) })));
@@ -1153,12 +1223,12 @@ function crearPedido(o) {
     if (!p || !p.activo) err(400, 'Hay un producto que ya no está disponible');
     const mayor = it.unidad === 'mayor';
     const cantU = num(it.cantidad, `Cantidad inválida para "${p.nombre}"`, 0.0001);
-    if (mayor && (!(p.factor > 1) || !(p.precio_mayor_usd > 0))) err(400, `"${p.nombre}" no se vende al mayor`);
+    if (mayor && !(L.precioMayor(p) > 0)) err(400, `"${p.nombre}" no se vende al mayor`);
     if (mayor && !Number.isInteger(cantU)) err(400, `Al mayor "${p.nombre}" se pide por ${p.unidad_compra} completa`);
     if (!(p.precio_usd > 0)) err(400, `"${p.nombre}" no está a la venta`);
     const cant = mayor ? cantU * p.factor : cantU;
     agr.set(p.id, (agr.get(p.id) || 0) + cant);
-    lineas.push({ p, cant, mayor, cantU, precioU: mayor ? p.precio_mayor_usd : p.precio_usd });
+    lineas.push({ p, cant, mayor, cantU, precioU: mayor ? L.precioMayor(p) : p.precio_usd });
   }
   for (const [id, cant] of agr) {
     const disp = L.disponible(id);
@@ -1707,11 +1777,11 @@ pub('GET', '/api/app/catalogo', ({ query }) => {
   const w = ['p.activo=1', 'p.precio_usd>0'], a = [];
   if (query.q) { w.push('(p.nombre LIKE ? OR p.marca LIKE ? OR EXISTS(SELECT 1 FROM codigos_barra b WHERE b.producto_id=p.id AND b.codigo=?))'); a.push(like(query.q), like(query.q), String(query.q).trim()); }
   if (query.categoria_id) { w.push('p.categoria_id=?'); a.push(Number(query.categoria_id)); }
-  const rows = D.all(`SELECT p.id,p.nombre,p.marca,p.presentacion,p.unidad_venta,p.precio_usd,p.precio_mayor_usd,p.factor,p.unidad_compra,p.imagen,p.categoria_id,c.nombre AS categoria,
+  const rows = D.all(`SELECT p.id,p.nombre,p.marca,p.presentacion,p.unidad_venta,p.precio_usd,p.descuento_mayor,p.factor,p.unidad_compra,p.imagen,p.categoria_id,c.nombre AS categoria,
       COALESCE((SELECT SUM(cantidad) FROM inventario_movimientos m WHERE m.producto_id=p.id),0) AS stock FROM productos p LEFT JOIN categorias c ON c.id=p.categoria_id
       WHERE ${w.join(' AND ')} ORDER BY p.nombre LIMIT 400`, ...a);
   return { categorias: D.all("SELECT id,nombre FROM categorias WHERE activo=1 ORDER BY nombre"),
-    productos: rows.map((p) => { const disp = Math.max(0, r2(p.stock - L.reservadoDe(p.id))); const { stock, precio_mayor_usd, factor, unidad_compra, ...x } = p; const mayor = precio_mayor_usd > 0 && factor > 1 ? { precio_usd: precio_mayor_usd, factor, unidad: unidad_compra || 'caja', disponible: Math.floor(disp / factor + 1e-9) } : null; return { ...x, disponible: disp, mayor }; }).filter((p) => p.disponible > 0 || query.todos) };
+    productos: rows.map((p) => { const disp = Math.max(0, r2(p.stock - L.reservadoDe(p.id))); const { stock, descuento_mayor, factor, unidad_compra, ...x } = p; const pm = L.precioMayor({ precio_usd: p.precio_usd, factor, descuento_mayor }); const mayor = pm > 0 ? { precio_usd: pm, factor, unidad: unidad_compra || 'caja', disponible: Math.floor(disp / factor + 1e-9) } : null; return { ...x, disponible: disp, mayor }; }).filter((p) => p.disponible > 0 || query.todos) };
 });
 pub('GET', '/api/app/medios-pago', () => D.all("SELECT id,medio,banco,tipo_doc,documento,telefono,titular,num_cuenta,tipo_cuenta,moneda,observacion FROM medios_pago_app WHERE estado='publicado' ORDER BY medio, banco"));
 cli('GET', '/api/app/perfil', ({ cliente }) => sanitizarCliente(cliente));

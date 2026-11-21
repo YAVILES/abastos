@@ -14,15 +14,16 @@
           <div class="c" style="margin-top:10px"><a class="btn sm" href="${ruta}" target="_blank">Abrir en otra pestaña</a></div></div>
         <div>
           <div class="card"><h2>Enlace para tus repartidores</h2>
-            <div class="linkbox"><code>${e(enLinea)}</code><button class="btn sm" data-a="copiar" data-v="${e(enLinea)}">Copiar</button></div>
-            ${enRed.map((u) => `<div class="linkbox" style="margin-top:6px"><code>${e(u)}</code><button class="btn sm" data-a="copiar" data-v="${e(u)}">Copiar</button></div>`).join('')}
+            <div class="linkbox"><code>${e(enLinea)}</code><button class="btn sm" data-a="copiar" data-v="${e(enLinea)}">Copiar</button><button class="btn sm" data-a="qr" data-t="reparto" data-v="${e(enLinea)}">QR</button></div>
+            ${enRed.map((u) => `<div class="linkbox" style="margin-top:6px"><code>${e(u)}</code><button class="btn sm" data-a="copiar" data-v="${e(u)}">Copiar</button><button class="btn sm" data-a="qr" data-t="reparto" data-v="${e(u)}">QR</button></div>`).join('')}
             <p class="muted" style="margin-top:10px;font-size:12px">En el celular del repartidor: abrir el enlace, entrar con su usuario y clave y elegir <b>“Agregar a pantalla de inicio”</b>. Con el enlace de la red del local debe estar en el mismo wifi.</p></div>
           <div class="card"><h2>Repartidores</h2>${reps.length ? A.tabla([{ h: 'Nombre', f: (r) => e(r.nombre) }, { h: 'Usuario', f: (r) => e(r.usuario || '') }, { h: 'Teléfono', f: (r) => e(r.telefono || '—') },
               { h: '', f: (r) => r.telefono ? `<a class="btn sm" target="_blank" rel="noopener" href="${e(A.wa(r.telefono, `Hola ${r.nombre}, esta es la app para tus entregas de ${par.empresa.nombre}: ${enLinea} . Entra con tu usuario y clave.`))}">Enviarle el enlace por WhatsApp</a>` : '<span class="muted">Sin teléfono</span>' }], reps)
             : '<p class="muted">Aún no hay repartidores. Créalos en <a href="#/parametros/usuarios">Parámetros › Usuarios</a> con el rol Repartidor.</p>'}</div>
           <div class="card"><h2>Cómo funciona</h2><ol style="margin:0;padding-left:20px;line-height:1.7"><li>Un pedido con envío queda <b>listo</b> y a los repartidores les aparece en su app.</li><li>El repartidor lo toma, marca <b>en camino</b> y luego <b>entregado</b>.</li><li>También puedes asignarlo a uno concreto desde <a href="#/pedidos">Pedidos</a> y avisarle por WhatsApp.</li></ol></div>
         </div></div>`;
-    A.acciones(root, { copiar: async (el) => { try { await navigator.clipboard.writeText(el.dataset.v); A.ok('Enlace copiado'); } catch { A.toast('Selecciona el enlace y cópialo con Ctrl+C', 'bad'); } } });
+    A.acciones(root, { qr: (el) => A.qr.ventana(el.dataset.v, el.dataset.t),
+      copiar: async (el) => { try { await navigator.clipboard.writeText(el.dataset.v); A.ok('Enlace copiado'); } catch { A.toast('Selecciona el enlace y cópialo con Ctrl+C', 'bad'); } } });
   };
 
   A.vistas.app = async (root) => {
@@ -54,15 +55,15 @@
           <p class="muted c" style="font-size:12px">Así la ve tu cliente. Puedes crear una cuenta de prueba y hacer un pedido para verlo llegar a <a href="#/pedidos">Pedidos</a>.</p></div>
         <div>
           <div class="card"><h2>Enlace para tus clientes</h2>
-            <div class="linkbox"><code>${e(enLinea)}</code><button class="btn sm" data-a="copiar" data-v="${e(enLinea)}">Copiar</button></div>
-            ${enRed.length ? `<p class="muted" style="margin:10px 0 4px">Dentro de la red del local (clientes conectados al mismo wifi):</p>${enRed.map((u) => `<div class="linkbox" style="margin-bottom:6px"><code>${e(u)}</code><button class="btn sm" data-a="copiar" data-v="${e(u)}">Copiar</button></div>`).join('')}` : ''}
+            <div class="linkbox"><code>${e(enLinea)}</code><button class="btn sm" data-a="copiar" data-v="${e(enLinea)}">Copiar</button><button class="btn sm" data-a="qr" data-t="tienda" data-v="${e(enLinea)}">QR</button></div>
+            ${enRed.length ? `<p class="muted" style="margin:10px 0 4px">Dentro de la red del local (clientes conectados al mismo wifi):</p>${enRed.map((u) => `<div class="linkbox" style="margin-bottom:6px"><code>${e(u)}</code><button class="btn sm" data-a="copiar" data-v="${e(u)}">Copiar</button><button class="btn sm" data-a="qr" data-t="tienda" data-v="${e(u)}">QR</button></div>`).join('')}` : ''}
             ${publico ? `<p style="margin-top:10px"><a class="btn pri" target="_blank" href="https://wa.me/?text=${encodeURIComponent(`Haz tu pedido en ${par.empresa.nombre}: ${enLinea}`)}">Compartir por WhatsApp</a></p>`
               : '<p class="muted" style="margin-top:10px;font-size:12px">Este enlace solo funciona en tu equipo o en tu red. Para que lo abra cualquiera desde su casa hay que publicar el sistema en internet (ver <b>DESPLIEGUE.md</b>).</p>'}
             <p class="muted" style="margin-top:10px;font-size:12px">En el celular, el cliente abre el enlace y elige <b>“Agregar a pantalla de inicio”</b>: queda como una app.</p></div>
           <div class="card"><h2>App del repartidor</h2>
             <p class="muted" style="margin:0 0 10px">Crea los repartidores en <a href="#/parametros/usuarios">Parámetros › Usuarios</a> (rol Repartidor). Cuando un pedido con envío queda <b>listo</b>, a cada repartidor le suena un aviso en su teléfono; uno lo toma, marca <b>en camino</b> y luego <b>entregado</b>. Tú y el cliente ven cada paso.</p>
-            <div class="linkbox"><code>${e(location.origin + '/reparto/' + red.empresa + '/')}</code><button class="btn sm" data-a="copiar" data-v="${e(location.origin + '/reparto/' + red.empresa + '/')}">Copiar</button></div>
-            ${red.ips.map((ip) => { const u = `${location.protocol}//${ip}${puerto}/reparto/${red.empresa}/`; return `<div class="linkbox" style="margin-top:6px"><code>${e(u)}</code><button class="btn sm" data-a="copiar" data-v="${e(u)}">Copiar</button></div>`; }).join('')}
+            <div class="linkbox"><code>${e(location.origin + '/reparto/' + red.empresa + '/')}</code><button class="btn sm" data-a="copiar" data-v="${e(location.origin + '/reparto/' + red.empresa + '/')}">Copiar</button><button class="btn sm" data-a="qr" data-t="reparto" data-v="${e(location.origin + '/reparto/' + red.empresa + '/')}">QR</button></div>
+            ${red.ips.map((ip) => { const u = `${location.protocol}//${ip}${puerto}/reparto/${red.empresa}/`; return `<div class="linkbox" style="margin-top:6px"><code>${e(u)}</code><button class="btn sm" data-a="copiar" data-v="${e(u)}">Copiar</button><button class="btn sm" data-a="qr" data-t="reparto" data-v="${e(u)}">QR</button></div>`; }).join('')}
           </div>
           <div class="card"><h2>¿Está lista para abrirla?</h2>${checks.map(([t, msg, href, acc]) => `<div class="check ${t}"><span class="pt"></span><div style="flex:1">${e(msg)}</div>${href ? `<a class="btn sm" href="${href}">${e(acc)}</a>` : ''}</div>`).join('')}</div>
           <div class="card"><h2>Cómo funciona para el cliente</h2><ol style="margin:0;padding-left:20px;line-height:1.7">
@@ -75,6 +76,7 @@
         </div></div>`;
     A.acciones(root, {
       recargar: () => { $('#vp', root).src = ruta; },
+      qr: (el) => A.qr.ventana(el.dataset.v, el.dataset.t),
       copiar: async (el) => { try { await navigator.clipboard.writeText(el.dataset.v); A.ok('Enlace copiado'); } catch { A.toast('Selecciona el enlace y cópialo con Ctrl+C', 'bad'); } }
     });
   };

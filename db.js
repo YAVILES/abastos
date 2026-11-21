@@ -38,7 +38,7 @@ function abrir(slug) {
     ['ordenes_entrega', 'asignado_en TEXT'], ['ordenes_entrega', 'salida_en TEXT'], ['ordenes_entrega', 'retirado_en TEXT'], ['ordenes_entrega', 'rechazado_en TEXT'], ['ordenes_entrega', 'motivo_rechazo TEXT'], ['ordenes_entrega', 'entregado_en TEXT'], ['ordenes_entrega', 'receptor TEXT'], ['ordenes_entrega', 'nota_entrega TEXT'], ['conteos', 'arrastre_antes TEXT'], ['compras', 'enviada_en TEXT'], ['compras', 'enviada_por TEXT'], ['compras', 'envio_medio TEXT'], ['compras', 'envio_nota TEXT'], ['compras', 'factura TEXT'], ['compras', 'factura_fecha TEXT'],
     ['compras', 'recepcion_nota TEXT'], ['compras', 'recibida_por TEXT'], ['compras', 'con_diferencias INTEGER NOT NULL DEFAULT 0'], ['compras', 'total_pedido REAL'],
     ['compra_detalles', 'cantidad_pedida REAL'], ['compra_detalles', 'costo_pedido REAL'], ['inventario_movimientos', 'saldo_cant REAL'], ['inventario_movimientos', 'saldo_valor REAL'], ['inventario_movimientos', 'costo_prom REAL'], ['pagos_reportados', 'paga_con REAL'], ['proveedores', 'plazo_entrega INTEGER NOT NULL DEFAULT 3'],
-    ['productos', 'precio_mayor_usd REAL NOT NULL DEFAULT 0'], ['venta_detalles', 'unidad TEXT'], ['venta_detalles', 'cant_unidad REAL'], ['pedido_detalles', 'unidad TEXT'], ['pedido_detalles', 'cant_unidad REAL'], ['pedido_detalles', 'precio_unidad REAL'],
+    ['productos', 'precio_mayor_usd REAL NOT NULL DEFAULT 0'], ['productos', 'descuento_mayor REAL'], ['venta_detalles', 'unidad TEXT'], ['venta_detalles', 'cant_unidad REAL'], ['pedido_detalles', 'unidad TEXT'], ['pedido_detalles', 'cant_unidad REAL'], ['pedido_detalles', 'precio_unidad REAL'],
     ['pedidos', 'calificacion INTEGER'], ['pedidos', 'calificacion_nota TEXT'], ['pedidos', 'calificado_en TEXT']]) {
     if (!db.prepare(`PRAGMA table_info(${tabla})`).all().some((c) => c.name === def.split(' ')[0])) db.exec(`ALTER TABLE ${tabla} ADD COLUMN ${def}`);
   }
@@ -47,6 +47,8 @@ function abrir(slug) {
     const n = normalizarTelefono(c.telefono);
     if (n && n !== c.telefono && !db.prepare('SELECT 1 FROM clientes WHERE telefono=? AND id<>?').get(n, c.id)) db.prepare('UPDATE clientes SET telefono=? WHERE id=?').run(n, c.id);
   }
+  // El precio al mayor ahora sale de un descuento sobre el precio de venta: los precios escritos antes se convierten a su descuento equivalente.
+  db.exec('UPDATE productos SET descuento_mayor=MAX(0, ROUND((1 - precio_mayor_usd / (precio_usd * factor)) * 100, 4)) WHERE descuento_mayor IS NULL AND precio_mayor_usd>0 AND precio_usd>0 AND factor>1');
   // El margen pasó de ser sobre el costo a ser sobre el precio de venta: los productos con precio calculado conservan su precio.
   if (!db.prepare("SELECT 1 FROM parametros WHERE clave='margen_sobre_precio'").get()) {
     for (const p of db.prepare('SELECT id, margen FROM productos WHERE precio_fijo=0 AND margen>0').all())
@@ -226,6 +228,17 @@ CREATE TABLE IF NOT EXISTS pagos (
   jornada_id INTEGER, anulado INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_pagos_venta ON pagos(venta_id);
+-- Cashea: la parte que financia Cashea queda por cobrar a Cashea hasta su liquidación semanal
+CREATE TABLE IF NOT EXISTS cashea_liquidaciones (
+  id INTEGER PRIMARY KEY, fecha TEXT NOT NULL, cuenta_id INTEGER NOT NULL, moneda TEXT NOT NULL,
+  bruto_usd REAL NOT NULL, bruto REAL NOT NULL, recibido REAL NOT NULL, comision REAL NOT NULL DEFAULT 0, comision_usd REAL NOT NULL DEFAULT 0,
+  referencia TEXT, nota TEXT, usuario TEXT, jornada_id INTEGER, creado TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cashea_cxc (
+  id INTEGER PRIMARY KEY, venta_id INTEGER NOT NULL REFERENCES ventas(id), cliente_id INTEGER, monto_usd REAL NOT NULL,
+  referencia TEXT, estado TEXT NOT NULL DEFAULT 'pendiente', creado TEXT NOT NULL, liquidacion_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS ix_cashea_estado ON cashea_cxc(estado);
 CREATE TABLE IF NOT EXISTS cxc (
   id INTEGER PRIMARY KEY, cliente_id INTEGER NOT NULL, venta_id INTEGER, total_usd REAL NOT NULL,
   saldo_usd REAL NOT NULL, vence TEXT, estado TEXT NOT NULL, creado TEXT NOT NULL
@@ -358,7 +371,8 @@ const DEFAULTS = {
   // Lector de códigos: 'teclado' (USB/Bluetooth que escribe como teclado), 'serial' (puerto COM virtual) o 'camara'
   lector: { tipo: 'teclado', sufijo: 'Enter', prefijo: '', largo_min: 6, ms_entre_teclas: 60, captura_global: true, sonido: true, validar_digito: false, baudios: 9600 },
   tasas: { auto_bcv: true },
-  operacion: { reserva_minutos: 30, reserva_extension_minutos: 240, descuento_max_pct: 5, margen_defecto: 30, stock_negativo: false, compra_ciclo_dias: 7, compra_cobertura_max_dias: 45, venta_requiere_cliente: true }
+  cashea: { activo: false, comision_pct: 0, inicial_min_pct: 0 },
+  operacion: { reserva_minutos: 30, reserva_extension_minutos: 240, descuento_max_pct: 5, margen_defecto: 30, imprimir_ticket: true, compra_ciclo_dias: 7, compra_cobertura_max_dias: 45, venta_requiere_cliente: true }
 };
 function param(clave) {
   const f = get('SELECT valor FROM parametros WHERE clave=?', clave);

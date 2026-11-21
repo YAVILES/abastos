@@ -397,10 +397,49 @@
     } });
   };
 
+  // Historial de cuentas por cobrar: todas las facturas a crédito, también las pagadas y anuladas
+  async function historialCxc(root) {
+    const f = { estado: 'todas', desde: '', hasta: '', q: '' };
+    root.innerHTML = `<div class="topbar"><h1 style="margin:0">Cuentas por cobrar</h1><div class="chips"><a class="btn" href="#/cxc">Abiertas</a><a class="btn pri" href="#/cxc/historial">Historial</a></div></div>
+      <div class="card no-print" style="margin-bottom:14px"><div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div><label>Estado</label><select id="he">${[['todas', 'Todas'], ['abiertas', 'Abiertas'], ['pagada', 'Pagadas'], ['anulada', 'Anuladas']].map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></div>
+        <div><label>Desde</label><input id="hd" type="date"></div><div><label>Hasta</label><input id="hh" type="date"></div>
+        <div class="grow"><label>Cliente, cédula o venta</label><input id="hq" placeholder="Buscar…" autocomplete="off"></div>
+        <button class="btn" id="hcsv">Exportar CSV</button></div></div><div id="hout"></div>`;
+    let datos = null;
+    async function cargar() {
+      const d = await api.get('/api/cxc/historial' + A.qs({ estado: f.estado === 'todas' ? '' : f.estado, desde: f.desde, hasta: f.hasta, q: f.q }));
+      datos = d;
+      $('#hout', root).innerHTML = `<div class="grid g4" style="margin-bottom:14px"><div class="kpi"><div class="l">Facturas</div><div class="v">${d.totales.n}</div><div class="s">${d.totales.n >= 1000 ? 'se muestran las 1000 más recientes' : 'sin contar anuladas en los totales'}</div></div>
+          <div class="kpi"><div class="l">Emitido a crédito</div><div class="v">${usd(d.totales.emitido_usd)}</div></div><div class="kpi"><div class="l">Cobrado</div><div class="v ok">${usd(d.totales.cobrado_usd)}</div></div><div class="kpi"><div class="l">Por cobrar</div><div class="v">${usd(d.totales.saldo_usd)}</div></div></div>
+        <div class="card">${A.tabla([{ h: 'Fecha', f: (r) => e(A.fecha(r.creado).slice(0, 10)) }, { h: 'Cliente', f: (r) => `<b>${e(r.cliente)}</b>${r.documento ? `<div class="muted" style="font-size:11px">${e(r.documento)}</div>` : ''}` }, { h: 'Venta', f: (r) => e(r.venta || '') },
+          { h: 'Vence', f: (r) => `<span class="${r.vencida ? 'bad' : ''}">${e(r.vence || '')}</span>` }, { h: 'Total', n: 1, f: (r) => usd(r.total_usd) }, { h: 'Cobrado', n: 1, f: (r) => usd(r.cobrado_usd) },
+          { h: 'Saldo', n: 1, f: (r) => `<b>${usd(r.saldo_usd)}</b>` }, { h: 'Último cobro', f: (r) => r.ultimo_cobro ? `${e(A.fecha(r.ultimo_cobro).slice(0, 10))}<div class="muted" style="font-size:11px">${r.cobros} cobro(s)</div>` : '<span class="muted">—</span>' },
+          { h: 'Estado', f: (r) => A.estadoTag(r.estado) }, { h: '', f: (r, i) => `<button class="btn sm" data-a="ver" data-i="${i}">Ver</button>` }], d.filas, { vacio: 'No hay cuentas por cobrar con esos filtros' })}</div>`;
+    }
+    const recargar = A.debounce(() => cargar().catch(A.fail), 250);
+    $('#he', root).onchange = (ev) => { f.estado = ev.target.value; recargar(); };
+    $('#hd', root).onchange = (ev) => { f.desde = ev.target.value; recargar(); };
+    $('#hh', root).onchange = (ev) => { f.hasta = ev.target.value; recargar(); };
+    $('#hq', root).oninput = (ev) => { f.q = ev.target.value.trim(); recargar(); };
+    $('#hcsv', root).onclick = () => { if (datos) A.descargarCSV('historial_cuentas_por_cobrar.csv', [['fecha', 'cliente', 'documento', 'venta', 'vence', 'total_usd', 'cobrado_usd', 'saldo_usd', 'ultimo_cobro', 'estado'], ...datos.filas.map((r) => [String(r.creado).slice(0, 10), r.cliente, r.documento || '', r.venta || '', r.vence || '', r.total_usd, r.cobrado_usd, r.saldo_usd, r.ultimo_cobro ? String(r.ultimo_cobro).slice(0, 10) : '', r.estado])]); };
+    A.acciones(root, { ver: async (el) => {
+      const r = datos.filas[+el.dataset.i]; const x = await api.get('/api/cxc/' + r.id);
+      A.modal(`Cuenta por cobrar · ${e(x.venta || '#' + x.id)}`, `<div class="grid g2" style="margin-bottom:12px"><div><div class="muted" style="font-size:12px">Cliente</div><b>${e(x.cliente)}</b><div class="muted">${e(x.documento || '')} ${e(x.telefono || '')}</div></div>
+          <div><div class="muted" style="font-size:12px">Estado</div>${A.estadoTag(x.estado)} <span class="muted">vence ${e(x.vence || '—')}</span></div></div>
+        <div class="grid g3" style="margin-bottom:12px"><div class="kpi"><div class="l">Total a crédito</div><div class="v">${usd(x.total_usd)}</div></div><div class="kpi"><div class="l">Cobrado</div><div class="v ok">${usd(x.cobrado_usd)}</div></div><div class="kpi"><div class="l">Saldo</div><div class="v">${usd(x.saldo_usd)}</div></div></div>
+        <h3 style="margin:0 0 6px">Cobros</h3>${A.tabla([{ h: 'Fecha', f: (c) => e(A.fecha(c.fecha)) }, { h: 'Medio', f: (c) => e(A.MEDIOS[c.medio] || c.medio) + (c.anulado ? ' ' + A.tag('anulado', 'bad') : '') }, { h: 'Monto', n: 1, f: (c) => A.mon(c.monto, c.moneda) }, { h: 'USD', n: 1, f: (c) => usd(c.monto_usd) }, { h: 'Referencia', f: (c) => e(c.referencia || '') }, { h: 'Registró', f: (c) => e(c.usuario || '') }], x.cobros, { vacio: 'Todavía no hay cobros registrados' })}
+        <p class="muted" style="margin:10px 0 0">Venta ${e(x.venta || '')} del ${e(A.fecha(x.venta_fecha || x.creado).slice(0, 10))} por ${usd(x.venta_total || x.total_usd)}${x.venta_total && x.venta_total > x.total_usd + 0.005 ? ` (el resto se pagó de inicial: ${usd(x.venta_total - x.total_usd)})` : ''}.</p>`,
+        { ancho: true, pie: '<button class="btn" data-h>Estado de cuenta del cliente</button>', onMount: (v, cerrar) => { v.querySelector('[data-h]').onclick = () => { cerrar(); A.estadoCuentaCliente(x.cliente_id).catch(A.fail); }; } });
+    } });
+    await cargar();
+  }
+
   A.vistas.cxc = async (root, arg) => {
+    if (arg === 'historial') return historialCxc(root);
     const [rows, venc] = await Promise.all([api.get('/api/cxc' + A.qs({ estado: 'abiertas', cliente_id: arg })), api.get('/api/cxc/vencidos')]);
     const total = rows.reduce((a, r) => a + r.saldo_usd, 0), vencido = rows.filter((r) => r.vencida).reduce((a, r) => a + r.saldo_usd, 0);
-    root.innerHTML = `<h1>Cuentas por cobrar ${arg ? '<a class="btn sm" href="#/cxc">ver todas</a>' : ''}</h1><div class="grid g4" style="margin-bottom:14px"><div class="kpi"><div class="l">Por cobrar</div><div class="v">${usd(total)}</div></div><div class="kpi"><div class="l">Vencido</div><div class="v bad">${usd(vencido)}</div>
+    root.innerHTML = `<div class="topbar"><h1 style="margin:0">Cuentas por cobrar ${arg ? '<a class="btn sm" href="#/cxc">ver todas</a>' : ''}</h1><div class="chips"><a class="btn pri" href="#/cxc">Abiertas</a><a class="btn" href="#/cxc/historial">Historial</a></div></div><div class="grid g4" style="margin-bottom:14px"><div class="kpi"><div class="l">Por cobrar</div><div class="v">${usd(total)}</div></div><div class="kpi"><div class="l">Vencido</div><div class="v bad">${usd(vencido)}</div>
         ${venc.clientes.length ? `<div class="s"><button class="btn sm pri" data-a="vencidos" style="margin-top:6px">Recordar pago a ${venc.clientes.length} cliente(s)</button></div>` : '<div class="s">Nada vencido</div>'}</div>
         <div class="kpi" style="grid-column: span 2"><div class="l">Historial de un cliente</div><input id="bq" placeholder="Buscar por nombre, documento o teléfono" autocomplete="off" style="width:100%;margin-top:4px"><div id="bres" style="margin-top:6px"></div></div></div>
       <div class="card">${A.tabla([{ h: 'Cliente', f: (r) => `<a href="#" data-a="hist" data-c="${r.cliente_id}"><b>${e(r.cliente)}</b></a>` }, { h: 'Venta', f: (r) => e(r.venta || '') }, { h: 'Vence', f: (r) => `<span class="${r.vencida ? 'bad' : ''}">${e(r.vence)}</span>` }, { h: 'Total', n: 1, f: (r) => usd(r.total_usd) }, { h: 'Saldo', n: 1, f: (r) => `<b>${usd(r.saldo_usd)}</b>` }, { h: 'Estado', f: (r) => A.estadoTag(r.estado) },

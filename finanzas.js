@@ -59,10 +59,11 @@ function balance(t) {
   const cxc = D.get("SELECT COALESCE(SUM(saldo_usd),0) AS t, COALESCE(SUM(CASE WHEN vence<? THEN saldo_usd ELSE 0 END),0) AS vencida FROM cxc WHERE estado IN ('pendiente','abonada')", hoy);
   const cxp = D.get("SELECT COALESCE(SUM(saldo_usd),0) AS t, COALESCE(SUM(CASE WHEN vence<? THEN saldo_usd ELSE 0 END),0) AS vencida FROM cxp WHERE estado IN ('pendiente','abonada')", hoy);
   const inv = D.get(`SELECT COALESCE(SUM(MAX(0,s)*c),0) AS v FROM (SELECT (SELECT COALESCE(SUM(cantidad),0) FROM inventario_movimientos m WHERE m.producto_id=p.id) AS s, p.costo_usd AS c FROM productos p)`).v;
-  const corrientes = r2(efectivo + bancos + cxc.t + inv);
+  const cas = D.get("SELECT COALESCE(SUM(monto_usd),0) AS t FROM cashea_cxc WHERE estado='pendiente'").t;   // financiado por Cashea y aún no liquidado
+  const corrientes = r2(efectivo + bancos + cxc.t + cas + inv);
   const pasivos = r2(cxp.t);
   return {
-    cuentas, efectivo, bancos, cxc: r2(cxc.t), cxc_vencida: r2(cxc.vencida), inventario: r2(inv), activos_corrientes: corrientes, activos_total: corrientes,
+    cuentas, efectivo, bancos, cxc: r2(cxc.t), cashea: r2(cas), cxc_vencida: r2(cxc.vencida), inventario: r2(inv), activos_corrientes: corrientes, activos_total: corrientes,
     cxp: r2(cxp.t), cxp_vencida: r2(cxp.vencida), pasivos_corrientes: pasivos, pasivos_total: pasivos, patrimonio: r2(corrientes - pasivos),
     tasa: { usd_ves: t.tasa_usd_ves, eur_usd: t.tasa_eur_usd }, a_la_fecha: D.hoy()
   };
@@ -72,11 +73,12 @@ function flujoCaja({ desde, hasta }, t, balanceHoy) {
   const filas = D.all(`SELECT m.tipo, COALESCE(SUM(m.monto_usd),0) AS usd FROM cuenta_movimientos m
     WHERE substr(m.fecha,1,10) BETWEEN ? AND ? GROUP BY m.tipo`, desde, hasta);
   const g = (...tipos) => r2(filas.filter((f) => tipos.includes(f.tipo)).reduce((a, f) => a + f.usd, 0));
-  const conocidos = ['venta', 'vuelto', 'reverso_venta', 'cobro_cxc', 'compra', 'reverso_compra', 'pago_proveedor', 'gasto', 'reverso_gasto', 'transferencia_interna'];
+  const conocidos = ['venta', 'vuelto', 'reverso_venta', 'cobro_cxc', 'cashea', 'compra', 'reverso_compra', 'pago_proveedor', 'gasto', 'reverso_gasto', 'transferencia_interna'];
   const otros = r2(filas.filter((f) => !conocidos.includes(f.tipo)).reduce((a, f) => a + f.usd, 0));
   const lineas = [
     { concepto: 'Cobros de ventas (netos de vuelto y anulaciones)', usd: g('venta', 'vuelto', 'reverso_venta'), grupo: 'operacion' },
     { concepto: 'Cobros de cuentas por cobrar', usd: g('cobro_cxc'), grupo: 'operacion' },
+    { concepto: 'Liquidaciones de Cashea', usd: g('cashea'), grupo: 'operacion' },
     { concepto: 'Compras pagadas de contado', usd: g('compra', 'reverso_compra'), grupo: 'operacion' },
     { concepto: 'Pagos a proveedores (cuentas por pagar)', usd: g('pago_proveedor'), grupo: 'operacion' },
     { concepto: 'Gastos operativos', usd: g('gasto', 'reverso_gasto'), grupo: 'operacion' },

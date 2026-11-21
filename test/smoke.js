@@ -764,21 +764,27 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
   paso('venta al detal y al mayor: dos unidades de venta, un solo inventario');
   {
     const base1 = { nombre: 'Aceite 1L (prueba mayor)', costo_usd: 0.8, precio_usd: 1.5, factor: 12, unidad_compra: 'caja', unidad_venta: 'botella', stock_inicial: 60 };
-    await falla(api('POST', '/api/productos', { ...base1, nombre: 'Mayor caro', precio_mayor_usd: 20 }), 400, /no puede superar 18/);
-    await falla(api('POST', '/api/productos', { ...base1, nombre: 'Mayor sin caja', factor: 1, precio_mayor_usd: 1 }), 400, /más de 1/);
-    const pm = (await ok(api('POST', '/api/productos', { ...base1, precio_mayor_usd: 15 }))).id;
-    assert.equal((await ok(api('GET', '/api/productos/' + pm))).precio_mayor_usd, 15);
+    await falla(api('POST', '/api/productos', { ...base1, nombre: 'Descuento total', descuento_mayor: 100 }), 400, /menor a 100/);
+    await falla(api('POST', '/api/productos', { ...base1, nombre: 'Mayor sin caja', factor: 1, descuento_mayor: 5 }), 400, /más de 1/);
+    // 12 botellas a 1,50 = 18,00 la caja; con 10 % de descuento al mayor = 16,20
+    const pm = (await ok(api('POST', '/api/productos', { ...base1, descuento_mayor: 10 }))).id;
+    assert.equal((await ok(api('GET', '/api/productos/' + pm))).precio_mayor_usd, 16.2);
+    assert.equal((await ok(api('GET', '/api/productos')) ).find((x) => x.id === pm).precio_mayor_usd, 16.2);
+    // el descuento sigue al precio: si el precio de venta cambia, la caja cambia con él
+    await ok(api('PUT', '/api/productos/' + pm, { precio_usd: 2 }));
+    assert.equal((await ok(api('GET', '/api/productos/' + pm))).precio_mayor_usd, 21.6);
+    await ok(api('PUT', '/api/productos/' + pm, { precio_usd: 1.5 }));
     const pago = (monto) => [{ medio: 'efectivo', moneda: 'USD', monto }];
     // 2 cajas al mayor = 30 USD y salen 24 botellas del mismo inventario
-    const vm = await ok(api('POST', '/api/ventas', { items: [{ producto_id: pm, cantidad: 2, unidad: 'mayor' }], pagos: pago(30) }));
-    assert.equal(vm.total_usd, 30);
+    const vm = await ok(api('POST', '/api/ventas', { items: [{ producto_id: pm, cantidad: 2, unidad: 'mayor' }], pagos: pago(32.4) }));
+    assert.equal(vm.total_usd, 32.4);
     let det = await ok(api('GET', '/api/ventas/' + vm.id));
     assert.equal(det.items[0].cantidad, 24); assert.equal(det.items[0].cant_unidad, 2); assert.equal(det.items[0].unidad, 'mayor');
-    assert.equal(Math.round(det.items[0].cantidad * det.items[0].precio_usd * 100) / 100, 30);
+    assert.equal(Math.round(det.items[0].cantidad * det.items[0].precio_usd * 100) / 100, 32.4);
     assert.equal((await ok(api('GET', '/api/productos/' + pm))).stock, 36);
-    // una caja y tres botellas en la misma venta: 15 + 4,50
-    const vx = await ok(api('POST', '/api/ventas', { items: [{ producto_id: pm, cantidad: 1, unidad: 'mayor' }, { producto_id: pm, cantidad: 3 }], pagos: pago(19.5) }));
-    assert.equal(vx.total_usd, 19.5);
+    // una caja y tres botellas en la misma venta: 16,20 + 4,50
+    const vx = await ok(api('POST', '/api/ventas', { items: [{ producto_id: pm, cantidad: 1, unidad: 'mayor' }, { producto_id: pm, cantidad: 3 }], pagos: pago(20.7) }));
+    assert.equal(vx.total_usd, 20.7);
     assert.equal((await ok(api('GET', '/api/productos/' + pm))).stock, 21);
     // validaciones
     await falla(api('POST', '/api/ventas', { items: [{ producto_id: pm, cantidad: 1.5, unidad: 'mayor' }], pagos: pago(30) }), 400, /completa/);
@@ -792,17 +798,96 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
     // app de clientes: el catálogo ofrece la caja y el pedido reserva sus botellas
     const cat = await ok(api('GET', '/api/app/catalogo?q=Aceite', null, ct));
     const pc = cat.productos.find((x) => x.id === pm);
-    assert.deepEqual(pc.mayor, { precio_usd: 15, factor: 12, unidad: 'caja', disponible: 5 });
-    assert.equal(pc.precio_mayor_usd, undefined);
+    assert.deepEqual(pc.mayor, { precio_usd: 16.2, factor: 12, unidad: 'caja', disponible: 5 });
+    assert.equal(pc.precio_mayor_usd, undefined); assert.equal(pc.descuento_mayor, undefined);
     await falla(api('POST', '/api/app/pedidos', { items: [{ producto_id: pm, cantidad: 6, unidad: 'mayor' }] }, ct), 409, /Stock insuficiente/);
     const pe = await ok(api('POST', '/api/app/pedidos', { items: [{ producto_id: pm, cantidad: 2, unidad: 'mayor' }, { producto_id: pm, cantidad: 4 }] }, ct));
-    assert.equal(pe.total_usd, 36);
+    assert.equal(pe.total_usd, 38.4);
     const ped2 = await ok(api('GET', '/api/app/pedidos/' + pe.id, null, ct));
     assert.deepEqual(ped2.items.map((i) => [i.cantidad, i.unidad || null, i.cant_unidad || null]), [[24, 'mayor', 2], [4, null, null]]);
     assert.equal((await ok(api('GET', '/api/productos/' + pm))).reservado, 28);
     await ok(api('POST', `/api/app/pedidos/${pe.id}/cancelar`, {}, ct));
     assert.equal((await ok(api('GET', '/api/productos/' + pm))).reservado, 0);
     await ok(api('PUT', '/api/productos/' + pm, { activo: 0 }));
+  }
+
+  paso('Cashea: inicial en caja, el resto por cobrar a Cashea y liquidación semanal con comisión');
+  {
+    const pn = (await ok(api('POST', '/api/productos', { nombre: 'Licuadora (prueba Cashea)', costo_usd: 100, precio_usd: 200, stock_inicial: 5 }))).id;
+    const cliC = (await ok(api('POST', '/api/clientes', { nombre: 'Clienta Cashea', documento: 'V-20123456', telefono: '04125550001' }))).id;
+    const venta = (cant, inicial, ref) => api('POST', '/api/ventas', { cliente_id: cliC, items: [{ producto_id: pn, cantidad: cant }],
+      pagos: [{ medio: 'efectivo', moneda: 'USD', monto: inicial }, { medio: 'cashea', ...(ref ? { referencia: ref } : {}) }] });
+    await falla(venta(1, 80, 'CSH-1'), 409, /no está activado/);
+    await falla(api('PUT', '/api/parametros/cashea', { comision_pct: 100 }), 400, /entre 0 y 100/);
+    await ok(api('PUT', '/api/parametros/cashea', { activo: true, comision_pct: 5, inicial_min_pct: 40 }));
+    assert.equal((await ok(api('GET', '/api/me'))).cashea, true);
+    await falla(venta(1, 60, 'CSH-1'), 400, /inicial de al menos 40/);
+    await falla(venta(1, 80), 400, /código u orden/);
+    await falla(api('POST', '/api/ventas', { items: [{ producto_id: pn, cantidad: 1 }], pagos: [{ medio: 'efectivo', moneda: 'USD', monto: 80 }, { medio: 'cashea', referencia: 'X' }] }), 400, /cliente/);
+    await falla(venta(1, 200, 'CSH-0'), 400, /ya cubren el total/);
+    await falla(api('POST', '/api/ventas', { cliente_id: cliC, items: [{ producto_id: pn, cantidad: 1 }], pagos: [{ medio: 'efectivo', moneda: 'USD', monto: 80 }, { medio: 'credito' }, { medio: 'cashea', referencia: 'X' }] }), 400, /combinar/);
+    // el monto financiado se puede escribir: inicial + Cashea deben sumar el total
+    const conMonto = (inicial, financiado, ref) => api('POST', '/api/ventas', { cliente_id: cliC, items: [{ producto_id: pn, cantidad: 1 }],
+      pagos: [{ medio: 'efectivo', moneda: 'USD', monto: inicial }, { medio: 'cashea', monto: financiado, referencia: ref }] });
+    await falla(conMonto(80, 100, 'CSH-X'), 400, /debe sumar el total/);
+    await falla(conMonto(80, 130, 'CSH-X'), 400, /debe sumar el total/);
+    const v1 = await ok(conMonto(80, 120, 'CSH-1'));     // 200: 80 de inicial + 120 Cashea
+    assert.equal(v1.total_usd, 200); assert.equal(v1.cashea_usd, 120); assert.equal(v1.vuelto_usd, 0);
+    const dv = await ok(api('GET', '/api/ventas/' + v1.id));
+    assert.equal(dv.cliente_documento, 'V-20123456', 'el ticket muestra la cédula o el RIF del cliente'); assert.ok(dv.tasa_usd_ves > 0, 'la venta informa la tasa con la que se hizo, para el ticket en bolívares');
+    const v2 = await ok(venta(1, 100, 'CSH-2'));         // 200: 100 + 100
+    assert.equal(v2.cashea_usd, 100);
+    assert.equal((await ok(api('GET', '/api/productos/' + pn))).stock, 3);
+    let cs = await ok(api('GET', '/api/cashea'));
+    assert.equal(cs.pendientes.length, 2); assert.equal(cs.total_pendiente_usd, 220);
+    assert.deepEqual(cs.pendientes.map((x) => x.referencia), ['CSH-1', 'CSH-2']);
+    // el cobro de la caja solo trae la inicial; lo financiado no cuenta como efectivo
+    const turno = await ok(api('GET', '/api/turno'));
+    const pm = turno.resumen.por_medio.find((x) => x.medio === 'cashea');
+    assert.equal(pm.monto_usd, 220);
+    // aparece en el balance como por cobrar a Cashea
+    assert.equal((await ok(api('GET', '/api/finanzas/resumen'))).balance.cashea, 220);
+    // liquidación: Cashea deposita 114 por los 120 de la primera venta (5 % de comisión)
+    let usdB = (await ok(api('GET', '/api/cuentas'))).find((c) => c.tipo !== 'caja' && c.moneda === 'USD');
+    if (!usdB) usdB = { id: (await ok(api('POST', '/api/cuentas', { nombre: 'Banco USD Cashea', tipo: 'banco', moneda: 'USD' }))).id };
+    const saldo0 = (await ok(api('GET', '/api/cuentas'))).find((c) => c.id === usdB.id).saldo;
+    await falla(api('POST', '/api/cashea/liquidar', { ids: [], cuenta_id: usdB.id, monto_recibido: 114 }), 400, /Marca/);
+    await falla(api('POST', '/api/cashea/liquidar', { ids: [cs.pendientes[0].id], cuenta_id: usdB.id, monto_recibido: 125 }), 400, /más de lo que financió/);
+    await falla(api('POST', '/api/cashea/liquidar', { ids: [cs.pendientes[0].id], cuenta_id: usdB.id, monto_recibido: 114 }, tokCajero), 403);
+    const lq = await ok(api('POST', '/api/cashea/liquidar', { ids: [cs.pendientes[0].id], cuenta_id: usdB.id, monto_recibido: 114, referencia: 'DEP-77' }));
+    assert.equal(lq.bruto_usd, 120); assert.equal(lq.comision, 6); assert.equal(lq.comision_usd, 6);
+    assert.equal((await ok(api('GET', '/api/cuentas'))).find((c) => c.id === usdB.id).saldo, saldo0 + 114, 'la cuenta recibe lo depositado');
+    assert.ok((await ok(api('GET', '/api/gastos'))).gastos.some((g) => g.categoria === 'Comisiones Cashea' && g.monto_usd === 6));
+    await falla(api('POST', '/api/cashea/liquidar', { ids: [cs.pendientes[0].id], cuenta_id: usdB.id, monto_recibido: 114 }), 409, /ya fue liquidada/);
+    cs = await ok(api('GET', '/api/cashea'));
+    assert.equal(cs.pendientes.length, 1); assert.equal(cs.total_pendiente_usd, 100);
+    assert.equal(cs.liquidaciones[0].ventas, 1); assert.equal(cs.liquidaciones[0].recibido, 114);
+    assert.equal((await ok(api('GET', '/api/finanzas/resumen'))).balance.cashea, 100);
+    // anulaciones: la liquidada no se puede anular; la pendiente sí
+    await falla(api('POST', `/api/ventas/${v1.id}/anular`, { motivo: 'prueba' }), 409, /ya liquidó/);
+    await ok(api('POST', `/api/ventas/${v2.id}/anular`, { motivo: 'prueba Cashea' }));
+    assert.equal((await ok(api('GET', '/api/cashea'))).pendientes.length, 0);
+    assert.equal((await ok(api('GET', '/api/productos/' + pn))).stock, 4);
+    // Cashea no sirve para cobrar un crédito ni para pagar compras
+    await ok(api('PUT', '/api/parametros/cashea', { activo: false }));
+    await falla(venta(1, 80, 'CSH-3'), 409, /no está activado/);
+  }
+
+  paso('historial de cuentas por cobrar: facturas abiertas, pagadas y anuladas con sus cobros');
+  {
+    const h = await ok(api('GET', '/api/cxc/historial'));
+    assert.ok(h.filas.length >= 1 && h.totales.n === h.filas.length);
+    const f1 = h.filas.find((x) => x.cliente === 'Doña Marta');
+    assert.ok(f1 && f1.documento !== undefined && f1.cobrado_usd >= 0 && 'ultimo_cobro' in f1 && 'cobros' in f1);
+    assert.equal(h.totales.saldo_usd, Math.round(h.filas.filter((x) => x.estado !== 'anulada').reduce((t, x) => t + x.saldo_usd, 0) * 100) / 100);
+    const det = await ok(api('GET', '/api/cxc/' + f1.id));
+    assert.ok(Array.isArray(det.cobros) && det.cliente === 'Doña Marta' && det.cobrado_usd === f1.cobrado_usd);
+    await falla(api('GET', '/api/cxc/999999'), 404);
+    const ab = await ok(api('GET', '/api/cxc/historial?estado=abiertas'));
+    assert.ok(ab.filas.every((x) => ['pendiente', 'abonada'].includes(x.estado)));
+    const fut = await ok(api('GET', '/api/cxc/historial?desde=2999-01-01'));
+    assert.equal(fut.filas.length, 0);
+    assert.equal((await ok(api('GET', '/api/cxc/historial?q=Marta'))).filas.every((x) => x.cliente.includes('Marta')), true);
   }
 
   paso('cierre de caja con diferencia exige comentario; cierre del día');
@@ -986,6 +1071,21 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
   await ok(api('POST', `/api/plataforma/empresas/${emp.id}/clave-admin`, { clave: 'nueva-clave-9' }, tp));
   await falla(api('GET', '/api/productos', null, tokSur), 401); // sesiones cerradas al restablecer la clave
   await ok(api('POST', '/api/login', { empresa: 'abasto-sur', usuario: 'admin', clave: 'nueva-clave-9' }, ''));
+
+  paso('código QR: generador propio contra una matriz verificada con una implementación de referencia');
+  {
+    global.Abasto = global.Abasto || {};
+    const qr = require('../public/qr.js');
+    const huella = (r) => require('node:crypto').createHash('sha256').update(r.m.map((f) => f.map((x) => (x ? '1' : '0')).join('')).join('')).digest('hex').slice(0, 16);
+    const r = qr.matriz('https://abasto.onrender.com/tienda/mi-abasto/');
+    assert.equal(r.version, 4); assert.equal(r.n, 33); assert.equal(r.mascara, 2);
+    assert.equal(huella(r), 'ac9691cd0a332006', 'la matriz debe coincidir con la de la implementación de referencia');
+    assert.equal(qr.matriz('https://a.io/t/x').version, 2);
+    assert.equal(qr.matriz('x'.repeat(213)).version, 10);
+    assert.throws(() => qr.matriz('x'.repeat(214)), /demasiado largo/);
+    assert.match(qr.svg('https://a.io/t/x'), /^<svg[^>]*viewBox="0 0 33 33"/);
+    delete global.Abasto;
+  }
 
   paso('tasa del BCV: lectura de la página y registro automático sin pisar lo escrito a mano');
   {

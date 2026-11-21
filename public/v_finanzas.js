@@ -109,7 +109,7 @@
         <div class="card"><h2>Activos</h2><table><tbody>
           <tr><td colspan="2" style="font-weight:700">Activos corrientes</td></tr>
           ${f('Efectivo en cajas', b.efectivo, { sangria: 1 })}${cuentas('caja')}${f('Bancos y cuentas digitales', b.bancos, { sangria: 1 })}${cuentas('banco')}
-          ${f('Cuentas por cobrar a clientes', b.cxc, { sangria: 1 })}${f('Inventario de mercancía (a costo)', b.inventario, { sangria: 1 })}
+          ${f('Cuentas por cobrar a clientes', b.cxc, { sangria: 1 })}${b.cashea > 0 ? f('Por cobrar a Cashea', b.cashea, { sangria: 1 }) : ''}${f('Inventario de mercancía (a costo)', b.inventario, { sangria: 1 })}
           ${f('Total activos', b.activos_total, { negrita: true, linea: true })}</tbody></table></div>
         <div class="card"><h2>Pasivos y patrimonio</h2><table><tbody>
           <tr><td colspan="2" style="font-weight:700">Pasivos corrientes</td></tr>

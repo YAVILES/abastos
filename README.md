@@ -124,8 +124,17 @@ servicio simulado, aislamiento entre empresas, límites de plan, licencias y res
 
 ## Venta al detal y al mayor
 
-Cada producto tiene dos presentaciones con un solo inventario: la **unidad de venta** (detal, ej. botella) y la **unidad de compra** (mayor, ej. caja de 12). En Productos se llenan «Unidades de venta por unidad de compra» y «Precio al mayor» (0 = no se vende al mayor; no puede superar el precio al detal × unidades de la caja).
+Cada producto tiene dos presentaciones con un solo inventario: la **unidad de venta** (detal, ej. botella) y la **unidad de compra** (mayor, ej. caja de 12). En Productos se llenan «Unidades de venta por unidad de compra» y «Descuento al mayor %» (también es una columna del Excel de inventario inicial). El precio de la caja es `precio al detal × unidades por caja × (1 − descuento)`, así que sigue al precio de venta aunque este sea calculado por margen. Descuento vacío = no se vende al mayor; 0 = por caja sin descuento.
 
 - En el punto de venta cada línea tiene un selector Detal / Mayor; al mayor se vende por cajas completas.
 - En la app de clientes el catálogo muestra la caja bajo el precio normal y el cliente la pide aparte.
 - El inventario, el kardex y la utilidad siguen en unidades de venta: 2 cajas de 12 descuentan 24 botellas. La venta guarda también las cajas (`cant_unidad`).
+
+## Cobro con Cashea
+
+Cashea financia al cliente: él paga una inicial en la tienda y Cashea paga el resto al abasto una vez por semana.
+
+- **Activarlo:** Parámetros › Cashea (comisión estimada e inicial mínima opcionales). Apagado por defecto; con la opción activa aparece el menú Cashea y el botón **+ Cashea** al cobrar.
+- **Al vender:** el cajero registra la inicial con los medios de siempre y agrega **+ Cashea** con el código de la orden; lo financiado se calcula solo con lo que falta. Exige cliente identificado. No se mezcla con el crédito propio.
+- **Qué pasa con el dinero:** la inicial entra a la caja o al banco; lo financiado queda **por cobrar a Cashea** (aparece en el balance y no cuenta como efectivo en el cierre de caja).
+- **Liquidación semanal:** en el menú Cashea se marcan las ventas incluidas, se elige el banco y se escribe lo depositado. La diferencia se registra como gasto «Comisiones Cashea». Una venta ya liquidada no se puede anular.

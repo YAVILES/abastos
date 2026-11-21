@@ -51,7 +51,7 @@
   // ======================= PARÁMETROS =======================
   A.vistas.parametros = async (root, arg) => {
     const tab = arg || 'negocio';
-    const tabs = [['negocio', 'Negocio'], ['operacion', 'Operación'], ['abc', 'Inventario cíclico ABC'], ['cuentas', 'Bancos y cajas'], ['medios', 'Pagos de la app'], ['tasas', 'Tasas de cambio'], ['lector', 'Lector de código de barras'], ['usuarios', 'Usuarios'], ['roles', 'Roles y permisos']];
+    const tabs = [['negocio', 'Negocio'], ['operacion', 'Operación'], ['abc', 'Inventario cíclico ABC'], ['cuentas', 'Bancos y cajas'], ['medios', 'Pagos de la app'], ['tasas', 'Tasas de cambio'], ['cashea', 'Cashea'], ['lector', 'Lector de código de barras'], ['usuarios', 'Usuarios'], ['roles', 'Roles y permisos']];
     const edit = A.can('parametros.editar');
     root.innerHTML = `<h1>Parámetros</h1><div class="chips" style="margin-bottom:12px">${tabs.map(([k, l]) => ((k === 'usuarios' || k === 'roles') && !A.can('usuarios.editar') ? '' : `<a class="btn ${k === tab ? 'pri' : ''}" href="#/parametros/${k}">${l}</a>`)).join('')}</div><div id="out"></div>`;
     const out = $('#out', root);
@@ -99,10 +99,10 @@
           <div><label>Margen por defecto en productos nuevos (%)</label><input name="margen_defecto" type="number" min="0" step="any" value="${p.margen_defecto}"></div>
           <div><label>Ciclo de compra (cada cuántos días haces pedidos)</label><input name="compra_ciclo_dias" type="number" min="1" max="90" value="${p.compra_ciclo_dias}"></div>
           <div><label>Cobertura máxima a comprar (días de venta)</label><input name="compra_cobertura_max_dias" type="number" min="7" max="365" value="${p.compra_cobertura_max_dias}"></div>
-          <div class="full"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="stock_negativo" ${p.stock_negativo ? 'checked' : ''}> Permitir vender con existencia insuficiente (stock negativo)</label></div>
-          <div class="full"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="venta_requiere_cliente" ${p.venta_requiere_cliente !== false ? 'checked' : ''}> Exigir la cédula o el RIF del cliente en cada venta del punto de venta (si no existe, se crea en el momento)</label></div></fieldset>
+          <div class="full"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="venta_requiere_cliente" ${p.venta_requiere_cliente !== false ? 'checked' : ''}> Exigir la cédula o el RIF del cliente en cada venta del punto de venta (si no existe, se crea en el momento)</label></div>
+          <div class="full"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="imprimir_ticket" ${p.imprimir_ticket !== false ? 'checked' : ''}> Abrir la ventana de impresión del ticket automáticamente al registrar cada venta</label></div></fieldset>
           ${edit ? '<div class="full"><button class="btn pri">Guardar</button></div>' : ''}</form>`;
-        $('#f', root).onsubmit = async (ev) => { ev.preventDefault(); const f = ev.target; try { await api.put('/api/parametros/operacion', { reserva_minutos: +f.reserva_minutos.value, reserva_extension_minutos: +f.reserva_extension_minutos.value, descuento_max_pct: +f.descuento_max_pct.value, margen_defecto: +f.margen_defecto.value, stock_negativo: f.stock_negativo.checked, venta_requiere_cliente: f.venta_requiere_cliente.checked, compra_ciclo_dias: +f.compra_ciclo_dias.value, compra_cobertura_max_dias: +f.compra_cobertura_max_dias.value }); A.ok('Guardado'); } catch (er) { A.fail(er); } };
+        $('#f', root).onsubmit = async (ev) => { ev.preventDefault(); const f = ev.target; try { await api.put('/api/parametros/operacion', { reserva_minutos: +f.reserva_minutos.value, reserva_extension_minutos: +f.reserva_extension_minutos.value, descuento_max_pct: +f.descuento_max_pct.value, margen_defecto: +f.margen_defecto.value, venta_requiere_cliente: f.venta_requiere_cliente.checked, imprimir_ticket: f.imprimir_ticket.checked, compra_ciclo_dias: +f.compra_ciclo_dias.value, compra_cobertura_max_dias: +f.compra_cobertura_max_dias.value }); A.ok('Guardado'); } catch (er) { A.fail(er); } };
       },
       async abc() {
         const [pr, abc] = await Promise.all([api.get('/api/parametros'), api.get('/api/abc')]);
@@ -252,6 +252,16 @@
         if (ch) ch.onchange = async () => { try { await api.put('/api/parametros/tasas', { auto_bcv: ch.checked }); A.ok(ch.checked ? 'Actualización automática encendida' : 'Actualización automática apagada'); P.tasas(); } catch (er) { ch.checked = !ch.checked; A.fail(er); } };
         A.acciones(out, { nueva: () => form(null), ed: (el) => form(t.lista[+el.dataset.i]),
           bcv: async () => { try { const r = await api.post('/api/tasas/bcv', {}); A.ok(r.aplicada ? `Tasa del ${r.fecha} actualizada: Bs ${A.fm(r.usd, 4)} por $` : (r.sinCambio ? 'Ya estaba al día con el BCV' : r.motivo)); await A.refrescarEstado(); P.tasas(); } catch (er) { A.fail(er); } } });
+      },
+      async cashea() {
+        const c = (await api.get('/api/parametros')).cashea;
+        out.innerHTML = `<form class="card form" id="f"><fieldset style="display:contents" ${dis}>
+          <div class="full"><p class="muted" style="margin:0">Cashea financia al cliente: él paga una inicial en la tienda y Cashea te paga el resto, una vez por semana. En el punto de venta eliges <b>+ Cashea</b> y la parte financiada se calcula sola con lo que falta de la inicial. Queda como <b>por cobrar a Cashea</b> hasta que registras la liquidación en el menú Cashea.</p></div>
+          <div class="full"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="activo" ${c.activo ? 'checked' : ''}> Cobrar con Cashea en el punto de venta</label></div>
+          <div><label>Comisión que te cobra Cashea (%)</label><input name="comision_pct" type="number" min="0" max="99" step="any" value="${c.comision_pct}"><div class="muted" style="font-size:12px;margin-top:4px">Solo es una estimación: al liquidar se registra la comisión real (lo financiado menos lo depositado).</div></div>
+          <div><label>Inicial mínima que debe pagar el cliente (%)</label><input name="inicial_min_pct" type="number" min="0" max="99" step="any" value="${c.inicial_min_pct}"><div class="muted" style="font-size:12px;margin-top:4px">0 = no se exige. Cashea define la inicial según el nivel de cada cliente.</div></div></fieldset>
+          ${edit ? '<div class="full"><button class="btn pri">Guardar</button></div>' : ''}</form>`;
+        $('#f', root).onsubmit = async (ev) => { ev.preventDefault(); const f = ev.target; try { await api.put('/api/parametros/cashea', { activo: f.activo.checked, comision_pct: +f.comision_pct.value, inicial_min_pct: +f.inicial_min_pct.value }); await A.refrescarEstado(); A.ok('Guardado'); } catch (er) { A.fail(er); } };
       },
       async roles() {
         const rr = await api.get('/api/roles');

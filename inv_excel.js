@@ -20,6 +20,7 @@ const COLUMNAS = [
   { k: 'precio_venta_usd', h: 'Precio de venta USD *', ancho: 15, req: 1, e: 'decimal', min: 0, que: 'Precio al público en dólares. Si no pones precio pero sí margen, el precio se calcula.', ej: 1.3 },
   { k: 'margen_utilidad', h: 'Margen % (opcional)', ancho: 12, e: 'decimal', min: 0, que: 'Porcentaje del precio de venta que queda como ganancia (precio = costo ÷ (1 − margen)). Solo se usa cuando no pones el precio.', ej: '' },
   { k: 'precio_fijo', h: 'Precio fijo (sí/no)', ancho: 12, lista: 'sn', que: '«sí»: el precio se mantiene aunque cambie el costo. «no»: se recalcula con el margen. Si lo dejas vacío, «sí».', ej: 'sí' },
+  { k: 'descuento_mayor', h: 'Descuento al mayor %', ancho: 14, e: 'decimal', min: 0, que: 'Opcional. Si vendes por caja o bulto, el descuento sobre el precio de venta de la caja completa (precio × unidades por caja). Déjalo vacío si no vendes al mayor; 0 = por caja sin descuento. Necesita «Unidades por unidad de compra» mayor a 1.', ej: '' },
   { k: 'stock_actual', h: 'Existencia inicial *', ancho: 14, req: 1, e: 'decimal', min: 0, que: 'Cuántas unidades de venta tienes hoy en el local, contadas. Si no tienes, escribe 0.', ej: 25 },
   { k: 'stock_minimo', h: 'Stock mínimo', ancho: 12, e: 'decimal', min: 0, que: 'Por debajo de esta cantidad el sistema te avisa que hay que reponer.', ej: 12 },
   { k: 'stock_maximo', h: 'Stock máximo', ancho: 12, e: 'decimal', min: 0, que: 'Lo máximo que quieres tener. Opcional.', ej: 60 },
@@ -34,6 +35,7 @@ for (const c of COLUMNAS) ALIAS[norm(c.h)] = c.k;
 Object.assign(ALIAS, {
   nombre: 'nombre', producto: 'nombre', codigo_de_barra: 'codigo_barra', codigo_barras: 'codigo_barra', codigo_barra: 'codigo_barra', codigo: 'codigo_interno', unidad_de_compra: 'unidad_compra', unidad_de_venta: 'unidad_venta',
   factor: 'factor_conversion', unidades_por_caja: 'factor_conversion', costo: 'costo_usd', costo_usd: 'costo_usd', precio: 'precio_venta_usd', precio_usd: 'precio_venta_usd', precio_venta_usd: 'precio_venta_usd',
+  descuento_mayor: 'descuento_mayor', descuento_al_mayor: 'descuento_mayor', desc_mayor: 'descuento_mayor', descuento_mayoreo: 'descuento_mayor',
   margen: 'margen_utilidad', margen_utilidad: 'margen_utilidad', precio_fijo: 'precio_fijo', existencia: 'stock_actual', existencia_inicial: 'stock_actual', stock: 'stock_actual', stock_actual: 'stock_actual',
   stock_minimo: 'stock_minimo', minimo: 'stock_minimo', stock_maximo: 'stock_maximo', maximo: 'stock_maximo', proveedor: 'proveedor_principal', proveedor_principal: 'proveedor_principal', ubicacion: 'ubicacion'
 });
