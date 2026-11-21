@@ -101,6 +101,7 @@ tr.click { cursor: pointer; } tr.click:hover td { background: var(--bg); }
 .velo { position: fixed; inset: 0; background: rgba(10,14,20,.55); backdrop-filter: blur(3px); display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px; z-index: 50; overflow: auto; animation: vel .16s ease-out; }
 .modal { background: var(--panel); border-radius: 20px; width: min(660px, 100%); box-shadow: var(--sh3); animation: sube .2s cubic-bezier(.2,.8,.3,1); }
 .modal.ancho { width: min(1000px, 100%); }
+.modal:focus { outline: none; }
 .modal header { padding: 20px 24px; border-bottom: 1px solid var(--line); font-weight: 700; font-size: 16px; letter-spacing: -.01em; display: flex; justify-content: space-between; align-items: center; }
 .modal .cuerpo { padding: 24px; } .modal footer { padding: 16px 24px; border-top: 1px solid var(--line); display: flex; gap: 8px; justify-content: flex-end; background: var(--bg); border-radius: 0 0 20px 20px; }
 .form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }

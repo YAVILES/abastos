@@ -57,12 +57,18 @@ window.Abasto = (() => {
     const v = document.createElement('div'); v.className = 'velo';
     v.innerHTML = `<div class="modal ${ancho ? 'ancho' : ''}" role="dialog" aria-modal="true"><header><span>${e(titulo)}</span><button class="btn sm" data-x>✕</button></header><div class="cuerpo">${cuerpoHtml}</div>${pie ? `<footer>${pie}</footer>` : ''}</div>`;
     document.body.appendChild(v);
-    const cerrar = () => { v.remove(); document.removeEventListener('keydown', esc); };
+    // Mientras hay una ventana abierta, lo que queda detrás no recibe teclado: así la barra espaciadora (y Enter) no vuelven a pulsar
+    // el botón que abrió la ventana y sirven para desplazarse dentro de ella.
+    const detras = [...document.body.children].filter((el) => el !== v && !el.hasAttribute('inert') && el.id !== 'toasts' && !/^(SCRIPT|IFRAME|STYLE)$/.test(el.tagName));
+    detras.forEach((el) => el.setAttribute('inert', ''));
+    const cerrar = () => { v.remove(); detras.forEach((el) => el.removeAttribute('inert')); document.removeEventListener('keydown', esc); };
     const esc = (ev) => { if (ev.key === 'Escape') cerrar(); };
     document.addEventListener('keydown', esc);
     v.addEventListener('mousedown', (ev) => { if (ev.target === v) cerrar(); });
     v.querySelector('[data-x]').onclick = cerrar;
-    const foco = v.querySelector('input:not([type=hidden]),select,textarea'); if (foco) foco.focus();
+    const dlg = v.firstElementChild; dlg.tabIndex = -1;
+    const foco = v.querySelector('input:not([type=hidden]),select,textarea');
+    if (foco) foco.focus(); else dlg.focus({ preventScroll: true });   // sin campos, el foco queda en la ventana y la barra espaciadora la desplaza
     if (onMount) onMount(v, cerrar);
     return { el: v, cerrar };
   }

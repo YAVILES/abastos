@@ -298,6 +298,25 @@
         const pagadoUSD = () => lin.filter((l) => !fin(l)).reduce((a, l) => a + aUSD(+l.monto || 0, l.moneda), 0);
         const vSuma = () => vl.reduce((a, l) => a + aUSD(+l.monto || 0, l.moneda), 0);
         const hayVuelto = () => { const h = lin.some(fin); return !h && pagadoUSD() - t.total > 0.01; };
+        // Qué falta para poder confirmar: se muestra debajo de las líneas de pago para que el botón gris no quede sin explicación
+        const motivos = () => {
+          const m = [], pag = pagadoUSD(), cm = casM();
+          lin.forEach((l) => {
+            const nombre = (A.MEDIOS[l.medio] || l.medio).toLowerCase();
+            if (l.medio === 'cashea' && !String(l.referencia).trim()) m.push('el código u orden de Cashea');
+            else if (['pago_movil', 'transferencia', 'punto'].includes(l.medio) && !String(l.referencia).trim()) m.push('el N° de referencia del ' + nombre);
+            if (!fin(l) && !(+l.monto > 0)) m.push('el monto del ' + nombre);
+          });
+          if (!lin.length) return m;
+          if (cm > 0 && Math.abs(pag + cm - t.total) > 0.011) m.push(`que la inicial más lo que financia Cashea sumen el total (hoy difieren ${usd(Math.abs(t.total - pag - cm))})`);
+          else if (!lin.some(fin) && pag < t.total - 0.005) m.push(`cubrir el total (faltan ${usd(t.total - pag)})`);
+          return m;
+        };
+        const actualizarBtn = () => {
+          bs.disabled = !puedeConfirmar();
+          const f = body.querySelector('#faltan'); if (!f) return;
+          const m = motivos(); f.textContent = m.length ? 'Para confirmar falta: ' + m.join(', ') + '.' : '';
+        };
         const puedeConfirmar = () => {
           const pag = pagadoUSD(), h = lin.some(fin);
           if (lin.some((l) => l.medio === 'cashea' && !String(l.referencia).trim())) return false;
@@ -331,6 +350,7 @@
               <div>${l.medio === 'cashea' ? `<label>Código u orden de Cashea</label><input data-k="referencia" data-i="${i}" placeholder="Código de la orden" value="${e(l.referencia)}">` : ''}${['pago_movil', 'transferencia', 'punto'].includes(l.medio) ? `<label>Referencia / banco</label><div class="row" style="flex-wrap:nowrap"><input data-k="referencia" data-i="${i}" placeholder="N° referencia" value="${e(l.referencia)}"><select data-k="cuenta_id" data-i="${i}">${bancos(l.moneda).map((c) => `<option value="${c.id}" ${c.id == l.cuenta_id ? 'selected' : ''}>${e(c.nombre)}</option>`).join('') || '<option value="">Sin cuenta</option>'}</select></div>` : ''}</div>
               <button class="btn sm" data-del="${i}">✕</button></div>`).join('')}
             ${lin.length ? '' : '<p class="muted">Agrega uno o más medios de pago (pago mixto permitido).</p>'}
+            <p id="faltan" class="bad" style="margin:10px 0 0"></p>
             ${!hayCred && dif > 0.01 ? `<div class="card" style="margin-top:12px;background:var(--bg2,#f6f7f9)"><h3 style="margin:0 0 6px">¿Cómo entregas el vuelto? <span class="muted" style="font-weight:400">(${usd(dif)} · ${ves(dif * j.tasa_usd_ves)})</span></h3>
               <div class="chips no-print" style="margin-bottom:8px">${[['efectivo', 'USD', 'Efectivo $'], ['efectivo', 'VES', 'Efectivo Bs'], ['pago_movil', 'VES', 'Pago móvil Bs'], ['transferencia', 'VES', 'Transferencia Bs'], ['efectivo', 'EUR', 'Efectivo €']].map(([me, mo, l], i) => `<button class="btn sm" data-vadd="${i}">+ ${l}</button>`).join('')}</div>
               ${vl.length ? vl.map((l, i) => `<div class="pago-lin"><div><label>Medio</label><select data-vk="medio" data-i="${i}">${['efectivo', 'pago_movil', 'transferencia'].map((k) => `<option value="${k}" ${k === l.medio ? 'selected' : ''}>${A.MEDIOS[k]}</option>`).join('')}</select></div>
@@ -340,7 +360,7 @@
                 <button class="btn sm" data-vdel="${i}">✕</button></div>`).join('') + (Math.abs(dif - vSuma()) > 0.03 ? `<p class="bad" style="margin:6px 0 0">Falta por entregar: <b>${usd(dif - vSuma())}</b> · ${ves((dif - vSuma()) * j.tasa_usd_ves)}</p>` : '<p class="ok" style="margin:6px 0 0">Vuelto completo.</p>')
               : `<p class="muted" style="margin:0">Si no eliges nada se entrega todo en <b>efectivo $</b> (${usd(dif)}). Si das parte en bolívares o por pago móvil, agrégalo aquí para que la caja y el banco queden cuadrados.</p>`}</div>` : ''}`;
           const ok = hayCred ? pag < t.total - 0.005 : pag >= t.total - 0.005;
-          bs.disabled = !puedeConfirmar();
+          actualizarBtn();
           body.querySelectorAll('[data-add]').forEach((b) => b.onclick = () => { const [me, mo] = [['efectivo', 'USD'], ['efectivo', 'VES'], ['pago_movil', 'VES'], ['transferencia', 'VES'], ['punto', 'VES'], ['efectivo', 'EUR'], ['credito', 'USD'], ['cashea', 'USD']][+b.dataset.add]; nueva(me, mo); });
           body.querySelectorAll('[data-vadd]').forEach((b) => b.onclick = () => { const [me, mo] = [['efectivo', 'USD'], ['efectivo', 'VES'], ['pago_movil', 'VES'], ['transferencia', 'VES'], ['efectivo', 'EUR']][+b.dataset.vadd]; nuevoVuelto(me, mo); });
           body.querySelectorAll('[data-vdel]').forEach((b) => b.onclick = () => { vl.splice(+b.dataset.vdel, 1); pintarPago(); });
@@ -349,7 +369,7 @@
             if (ev.type === 'change' && ['medio', 'moneda', 'cuenta_id', 'monto'].includes(k)) {
               if (k === 'moneda' || k === 'medio') l.cuenta_id = (bancos(l.moneda)[0] || {}).id || '';
               pintarPago();
-            } else bs.disabled = !puedeConfirmar();
+            } else actualizarBtn();
           });
           body.querySelectorAll('[data-del]').forEach((b) => b.onclick = () => { lin.splice(+b.dataset.del, 1); pintarPago(); });
           body.querySelectorAll('[data-k]').forEach((el) => el.onchange = el.oninput = (ev) => {
@@ -358,7 +378,7 @@
               if (k === 'medio' && ['credito', 'cashea'].includes(el.value)) l.moneda = 'USD';
               if (k === 'moneda' || k === 'medio') l.cuenta_id = (bancos(l.moneda)[0] || {}).id || '';
               pintarPago();
-            } else if (k === 'monto' || k === 'referencia') bs.disabled = !puedeConfirmar();
+            } else if (k === 'monto' || k === 'referencia') actualizarBtn();
           });
         }
         pintarPago();
@@ -379,7 +399,9 @@
               ${r.vuelto_usd > 0 ? `<p>Vuelto: <b>${usd(r.vuelto_usd)}</b> · ${ves(r.vuelto_usd * j.tasa_usd_ves)}</p>${(r.vuelto || []).map((x) => `<div class="muted">Entregado en ${e(A.MEDIOS[x.medio])} ${mon(x.monto, x.moneda)}${x.referencia ? ' · ref ' + e(x.referencia) : ''}</div>`).join('')}` : ''}${r.credito_usd > 0 ? `<p>A crédito: <b>${usd(r.credito_usd)}</b></p>` : ''}</div>`,
               { pie: `<button class="btn pri lg" data-p>🖨 Imprimir ticket</button><button class="btn" data-c>Nueva venta</button>`, onMount: (v2, c2) => {
                 const nueva = () => { c2(); q.focus(); if (requiere) identificar(); };
-                $('[data-c]', v2).onclick = nueva; $('[data-p]', v2).onclick = () => A.imprimirVenta(r.id); $('[data-p]', v2).focus();
+                $('[data-c]', v2).onclick = nueva; $('[data-p]', v2).onclick = () => A.imprimirVenta(r.id);
+                const tecla = (ev) => { if (!document.body.contains(v2)) return document.removeEventListener('keydown', tecla); if (ev.key === 'Enter' && !ev.repeat && !/^(BUTTON|A)$/.test(document.activeElement.tagName)) { ev.preventDefault(); nueva(); } };
+                setTimeout(() => document.addEventListener('keydown', tecla), 300);
               } });
             await A.refrescarEstado();
           } catch (er) { A.fail(er); bs.disabled = false; }
@@ -472,12 +494,19 @@
     const v = await api.get('/api/ventas/' + id);
     const t = v.tasa_usd_ves || (S.jornada && S.jornada.tasa_usd_ves) || 0;
     const bs = (usdv) => ves(Math.round(usdv * t * 100) / 100);
-    const orig = (p) => (p.moneda === 'VES' ? ves(p.monto) : `${ves(Math.round(p.monto_usd * t * 100) / 100)} <small>(${mon(p.monto, p.moneda)})</small>`);
-    const html = (`<html><head><title>${e(v.numero)}</title><style>body{font:12px monospace;width:300px;margin:8px}table{width:100%}td{padding:1px 0}.r{text-align:right}hr{border:0;border-top:1px dashed #000}small{font-size:10px}</style></head><body>
-      ${S.empresa.logo ? `<img src="${S.empresa.logo}" style="max-width:140px;max-height:70px;display:block;margin:0 auto 4px"><br>` : ''}<b>${e(S.empresa.nombre)}</b><br>${e(S.empresa.rif || '')}<br>${e(S.empresa.direccion || '')}<hr>Recibo ${e(v.numero)}<br>${e(v.fecha)}<br>Cajero: ${e(v.usuario)}${v.cliente ? '<br>Cliente: ' + e(v.cliente) + (v.cliente_documento ? '<br>C.I./RIF: ' + e(v.cliente_documento) : '') : ''}<br>Tasa: ${fm(t, 2)} Bs por US$<hr>
-      <table>${v.items.map((i) => `<tr><td colspan=2>${e(i.nombre)}</td></tr><tr><td>${i.unidad === 'mayor' ? fm(i.cant_unidad, 0) + ' (mayor) x ' + bs(i.cantidad * i.precio_usd / i.cant_unidad) : fm(i.cantidad, 2) + ' x ' + bs(i.precio_usd)}</td><td class=r>${bs(i.cantidad * i.precio_usd)}</td></tr>`).join('')}</table><hr>
-      <table><tr><td>Subtotal</td><td class=r>${bs(v.subtotal_usd)}</td></tr>${v.descuento_usd > 0 ? `<tr><td>Descuento</td><td class=r>-${bs(v.descuento_usd)}</td></tr>` : ''}<tr><td><b>TOTAL</b></td><td class=r><b>${bs(v.total_usd)}</b></td></tr><tr><td><small>Equivale a</small></td><td class=r><small>${usd(v.total_usd)}</small></td></tr></table><hr>
-      ${v.pagos.filter((p) => !p.anulado && p.tipo !== 'vuelto').map((p) => `${e(A.MEDIOS[p.medio])} ${orig(p)}${p.referencia ? ' ref ' + e(p.referencia) : ''}<br>`).join('')}${v.vuelto_usd > 0 ? `Vuelto ${bs(v.vuelto_usd)}<br>${v.pagos.filter((p) => !p.anulado && p.tipo === 'vuelto').map((p) => `&nbsp;&nbsp;entregado: ${e(A.MEDIOS[p.medio])} ${orig(p)}${p.referencia ? ' ref ' + e(p.referencia) : ''}<br>`).join('')}` : ''}<hr>Documento no fiscal. ¡Gracias por su compra!</body></html>`);
+    const bsPago = (p) => (p.moneda === 'VES' ? ves(p.monto) : bs(p.monto_usd));
+    const extra = (p) => [p.moneda !== 'VES' ? mon(p.monto, p.moneda) : '', p.referencia ? 'ref ' + p.referencia : ''].filter(Boolean).join(' · ');
+    const fila = (a, b, neg) => `<div class="f"><span>${neg ? '<b>' + a + '</b>' : a}</span><span>${neg ? '<b>' + b + '</b>' : b}</span></div>`;
+    const lineaPago = (p, pre = '') => fila(pre + e(A.MEDIOS[p.medio]), bsPago(p)) + (extra(p) ? `<div><small>${e(extra(p))}</small></div>` : '');
+    // Papel térmico de 58 mm (RC-5801): zona de impresión de 48 mm, unos 30 caracteres por línea. Lo que no cabe en una línea baja a la siguiente.
+    const html = (`<html><head><title>${e(v.numero)}</title><style>@page{margin:0}*{box-sizing:border-box}body{font:10px/1.3 'Courier New',monospace;width:48mm;margin:0 auto;padding:2mm 0 6mm;color:#000}
+      hr{border:0;border-top:1px dashed #000;margin:5px 0}small{font-size:9px}.f{display:flex;flex-wrap:wrap;justify-content:space-between;gap:0 4px}.f span:last-child{margin-left:auto;white-space:nowrap}
+      .cab{text-align:center;line-height:1.3}.cab img{display:block;margin:0 auto 4px;max-width:40mm;max-height:20mm;object-fit:contain}.cab .nom{font-size:12px;font-weight:bold;margin-bottom:2px}.pie{text-align:center;font-size:12px;margin:8px 0 0}</style></head><body>
+      <div class="cab">${S.empresa.logo ? `<img src="${S.empresa.logo}" alt="">` : ''}<div class="nom">${e(S.empresa.nombre)}</div>${S.empresa.rif ? `<div>${e(S.empresa.rif)}</div>` : ''}${S.empresa.direccion ? `<div>${e(S.empresa.direccion)}</div>` : ''}${S.empresa.telefono ? `<div>Tel. ${e(S.empresa.telefono)}</div>` : ''}</div><hr>
+      Recibo ${e(v.numero)}<br>${e(v.fecha)}<br>Cajero: ${e(v.usuario)}${v.cliente ? '<br>Cliente: ' + e(v.cliente) + (v.cliente_documento ? '<br>C.I./RIF: ' + e(v.cliente_documento) : '') : ''}<br>Tasa: ${fm(t, 2)} Bs por US$<hr>
+      ${v.items.map((i) => `<div>${e(i.nombre)}</div>` + fila(i.unidad === 'mayor' ? fm(i.cant_unidad, 0) + ' (mayor) x ' + bs(i.cantidad * i.precio_usd / i.cant_unidad) : fm(i.cantidad, 2) + ' x ' + bs(i.precio_usd), bs(i.cantidad * i.precio_usd))).join('')}<hr>
+      ${fila('Subtotal', bs(v.subtotal_usd))}${v.descuento_usd > 0 ? fila('Descuento', '-' + bs(v.descuento_usd)) : ''}${fila('TOTAL', bs(v.total_usd), true)}<div class="f"><small>Equivale a</small><small>${usd(v.total_usd)}</small></div><hr>
+      ${v.pagos.filter((p) => !p.anulado && p.tipo !== 'vuelto').map((p) => lineaPago(p)).join('')}${v.vuelto_usd > 0 ? fila('Vuelto', bs(v.vuelto_usd)) + v.pagos.filter((p) => !p.anulado && p.tipo === 'vuelto').map((p) => lineaPago(p, 'entregado: ')).join('') : ''}<hr><small>Documento no fiscal</small><p class="pie"><b>Gracias Por su Compra</b></p></body></html>`);
     A.imprimirHtml(html);
   };
 
