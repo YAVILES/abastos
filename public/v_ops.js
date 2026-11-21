@@ -489,25 +489,34 @@
     const d = f.contentWindow.document; d.open(); d.write(html); d.close();
     setTimeout(() => { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (er) { A.toast('No se pudo abrir la impresión: ' + er.message, 'bad'); } setTimeout(() => f.remove(), 120000); }, 350);
   };
-  // El ticket va en bolívares, a la tasa con la que se hizo la venta; los pagos en otra moneda muestran también lo que entregó el cliente.
-  A.imprimirVenta = async (id) => {
-    const v = await api.get('/api/ventas/' + id);
+  // El ticket va en bolívares, a la tasa con la que se hizo la venta; lo que se paga en otra moneda muestra también lo entregado.
+  // Medidas según Parámetros › Impresión (por defecto, papel térmico de 58 mm con 48 mm imprimibles: unos 30 caracteres por línea).
+  A.ticketHtml = (v, cfgIn) => {
+    const c = { ancho_mm: 58, margen_lateral_mm: 5, margen_superior_mm: 2, margen_inferior_mm: 8, letra_px: 10, logo_alto_mm: 20, ...(S.impresion || {}), ...(cfgIn || {}) };
+    const zona = Math.max(30, c.ancho_mm - 2 * c.margen_lateral_mm);
     const t = v.tasa_usd_ves || (S.jornada && S.jornada.tasa_usd_ves) || 0;
     const bs = (usdv) => ves(Math.round(usdv * t * 100) / 100);
     const bsPago = (p) => (p.moneda === 'VES' ? ves(p.monto) : bs(p.monto_usd));
     const extra = (p) => [p.moneda !== 'VES' ? mon(p.monto, p.moneda) : '', p.referencia ? 'ref ' + p.referencia : ''].filter(Boolean).join(' · ');
     const fila = (a, b, neg) => `<div class="f"><span>${neg ? '<b>' + a + '</b>' : a}</span><span>${neg ? '<b>' + b + '</b>' : b}</span></div>`;
     const lineaPago = (p, pre = '') => fila(pre + e(A.MEDIOS[p.medio]), bsPago(p)) + (extra(p) ? `<div><small>${e(extra(p))}</small></div>` : '');
-    // Papel térmico de 58 mm (RC-5801): zona de impresión de 48 mm, unos 30 caracteres por línea. Lo que no cabe en una línea baja a la siguiente.
-    const html = (`<html><head><title>${e(v.numero)}</title><style>@page{margin:0}*{box-sizing:border-box}body{font:10px/1.3 'Courier New',monospace;width:48mm;margin:0 auto;padding:2mm 0 6mm;color:#000}
-      hr{border:0;border-top:1px dashed #000;margin:5px 0}small{font-size:9px}.f{display:flex;flex-wrap:wrap;justify-content:space-between;gap:0 4px}.f span:last-child{margin-left:auto;white-space:nowrap}
-      .cab{text-align:center;line-height:1.3}.cab img{display:block;margin:0 auto 4px;max-width:40mm;max-height:20mm;object-fit:contain}.cab .nom{font-size:12px;font-weight:bold;margin-bottom:2px}.pie{text-align:center;font-size:12px;margin:8px 0 0}</style></head><body>
+    return (`<html><head><title>${e(v.numero)}</title><style>@page{margin:0}*{box-sizing:border-box}body{font:${c.letra_px}px/1.3 'Courier New',monospace;width:${zona}mm;margin:0 auto;padding:${c.margen_superior_mm}mm 0 ${c.margen_inferior_mm}mm;color:#000}
+      hr{border:0;border-top:1px dashed #000;margin:5px 0}small{font-size:${Math.max(6, c.letra_px - 1)}px}.f{display:flex;flex-wrap:wrap;justify-content:space-between;gap:0 4px}.f span:last-child{margin-left:auto;white-space:nowrap}
+      .cab{text-align:center;line-height:1.3}.cab img{display:block;margin:0 auto 4px;max-width:${zona}mm;max-height:${c.logo_alto_mm}mm;object-fit:contain}.cab .nom{font-size:${c.letra_px + 2}px;font-weight:bold;margin-bottom:2px}.pie{text-align:center;font-size:${c.letra_px + 2}px;margin:8px 0 0}</style></head><body>
       <div class="cab">${S.empresa.logo ? `<img src="${S.empresa.logo}" alt="">` : ''}<div class="nom">${e(S.empresa.nombre)}</div>${S.empresa.rif ? `<div>${e(S.empresa.rif)}</div>` : ''}${S.empresa.direccion ? `<div>${e(S.empresa.direccion)}</div>` : ''}${S.empresa.telefono ? `<div>Tel. ${e(S.empresa.telefono)}</div>` : ''}</div><hr>
       Recibo ${e(v.numero)}<br>${e(v.fecha)}<br>Cajero: ${e(v.usuario)}${v.cliente ? '<br>Cliente: ' + e(v.cliente) + (v.cliente_documento ? '<br>C.I./RIF: ' + e(v.cliente_documento) : '') : ''}<br>Tasa: ${fm(t, 2)} Bs por US$<hr>
       ${v.items.map((i) => `<div>${e(i.nombre)}</div>` + fila(i.unidad === 'mayor' ? fm(i.cant_unidad, 0) + ' (mayor) x ' + bs(i.cantidad * i.precio_usd / i.cant_unidad) : fm(i.cantidad, 2) + ' x ' + bs(i.precio_usd), bs(i.cantidad * i.precio_usd))).join('')}<hr>
       ${fila('Subtotal', bs(v.subtotal_usd))}${v.descuento_usd > 0 ? fila('Descuento', '-' + bs(v.descuento_usd)) : ''}${fila('TOTAL', bs(v.total_usd), true)}<div class="f"><small>Equivale a</small><small>${usd(v.total_usd)}</small></div><hr>
       ${v.pagos.filter((p) => !p.anulado && p.tipo !== 'vuelto').map((p) => lineaPago(p)).join('')}${v.vuelto_usd > 0 ? fila('Vuelto', bs(v.vuelto_usd)) + v.pagos.filter((p) => !p.anulado && p.tipo === 'vuelto').map((p) => lineaPago(p, 'entregado: ')).join('') : ''}<hr><small>Documento no fiscal</small><p class="pie"><b>Gracias Por su Compra</b></p></body></html>`);
-    A.imprimirHtml(html);
+  };
+  // Venta de ejemplo para la vista previa y el ticket de prueba de Parámetros › Impresión
+  A.ventaEjemplo = () => ({ numero: 'V-000123', fecha: new Date().toISOString().slice(0, 16).replace('T', ' '), usuario: (S.user && (S.user.usuario || S.user.nombre)) || 'cajero', cliente: 'CLIENTE DE EJEMPLO', cliente_documento: 'V-12345678',
+    tasa_usd_ves: (S.jornada && S.jornada.tasa_usd_ves) || 914.02, subtotal_usd: 58.4, descuento_usd: 0, total_usd: 58.4, vuelto_usd: 0,
+    items: [{ nombre: 'Aceite de girasol 1 L', cantidad: 2, precio_usd: 1.5 }, { nombre: 'Harina de maíz precocida 1 kg (caja)', cantidad: 20, precio_usd: 1.35, unidad: 'mayor', cant_unidad: 2 }, { nombre: 'Arroz 1 kg', cantidad: 6, precio_usd: 1.4 }, { nombre: 'Café molido 250 g', cantidad: 3, precio_usd: 3.2 }],
+    pagos: [{ medio: 'efectivo', moneda: 'USD', monto: 20, monto_usd: 20, tipo: 'venta' }, { medio: 'pago_movil', moneda: 'VES', monto: 35100, monto_usd: 38.4, tipo: 'venta', referencia: '998877' }] });
+  A.imprimirVenta = async (id) => {
+    const v = await api.get('/api/ventas/' + id);
+    A.imprimirHtml(A.ticketHtml(v));
   };
 
   // ======================= CAJA =======================

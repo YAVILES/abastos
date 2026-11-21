@@ -371,6 +371,8 @@ const DEFAULTS = {
   // Lector de códigos: 'teclado' (USB/Bluetooth que escribe como teclado), 'serial' (puerto COM virtual) o 'camara'
   lector: { tipo: 'teclado', sufijo: 'Enter', prefijo: '', largo_min: 6, ms_entre_teclas: 60, captura_global: true, sonido: true, validar_digito: false, baudios: 9600 },
   tasas: { auto_bcv: true },
+  // Ticket: medidas en milímetros, letra y logo en el tamaño que necesite la impresora (RC-5801 de 58 mm: zona imprimible de 48 mm)
+  impresion: { ancho_mm: 58, margen_lateral_mm: 5, margen_superior_mm: 2, margen_inferior_mm: 8, letra_px: 10, logo_alto_mm: 20 },
   cashea: { activo: false, comision_pct: 0, inicial_min_pct: 0 },
   operacion: { reserva_minutos: 30, reserva_extension_minutos: 240, descuento_max_pct: 5, margen_defecto: 30, imprimir_ticket: true, compra_ciclo_dias: 7, compra_cobertura_max_dias: 45, venta_requiere_cliente: true }
 };

@@ -257,7 +257,7 @@ window.Abasto = (() => {
   async function cargarYo() {
     const me = await A.api.get('/api/me');
     A.S.user = me.usuario; A.S.perms = new Set(me.permisos); A.S.jornada = me.jornada; A.S.turno = me.turno; A.S.empresa = me.empresa;
-    A.S.cashea = !!me.cashea; A.S.imprimir = me.imprimir_ticket !== false; A.S.licencia = me.licencia; A.S.empresa_codigo = me.empresa_codigo; A.S.reconocimiento = me.reconocimiento; A.S.lector = me.lector;
+    A.S.cashea = !!me.cashea; A.S.imprimir = me.imprimir_ticket !== false; A.S.impresion = me.impresion; A.S.licencia = me.licencia; A.S.empresa_codigo = me.empresa_codigo; A.S.reconocimiento = me.reconocimiento; A.S.lector = me.lector;
     A.lector.autoSerial();
   }
   A.refrescarEstado = async () => { await cargarYo(); pintarChips(); };

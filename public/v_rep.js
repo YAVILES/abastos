@@ -51,7 +51,7 @@
   // ======================= PARÁMETROS =======================
   A.vistas.parametros = async (root, arg) => {
     const tab = arg || 'negocio';
-    const tabs = [['negocio', 'Negocio'], ['operacion', 'Operación'], ['abc', 'Inventario cíclico ABC'], ['cuentas', 'Bancos y cajas'], ['medios', 'Pagos de la app'], ['tasas', 'Tasas de cambio'], ['cashea', 'Cashea'], ['lector', 'Lector de código de barras'], ['usuarios', 'Usuarios'], ['roles', 'Roles y permisos']];
+    const tabs = [['negocio', 'Negocio'], ['operacion', 'Operación'], ['abc', 'Inventario cíclico ABC'], ['cuentas', 'Bancos y cajas'], ['medios', 'Pagos de la app'], ['tasas', 'Tasas de cambio'], ['cashea', 'Cashea'], ['impresion', 'Impresión'], ['lector', 'Lector de código de barras'], ['usuarios', 'Usuarios'], ['roles', 'Roles y permisos']];
     const edit = A.can('parametros.editar');
     root.innerHTML = `<h1>Parámetros</h1><div class="chips" style="margin-bottom:12px">${tabs.map(([k, l]) => ((k === 'usuarios' || k === 'roles') && !A.can('usuarios.editar') ? '' : `<a class="btn ${k === tab ? 'pri' : ''}" href="#/parametros/${k}">${l}</a>`)).join('')}</div><div id="out"></div>`;
     const out = $('#out', root);
@@ -252,6 +252,24 @@
         if (ch) ch.onchange = async () => { try { await api.put('/api/parametros/tasas', { auto_bcv: ch.checked }); A.ok(ch.checked ? 'Actualización automática encendida' : 'Actualización automática apagada'); P.tasas(); } catch (er) { ch.checked = !ch.checked; A.fail(er); } };
         A.acciones(out, { nueva: () => form(null), ed: (el) => form(t.lista[+el.dataset.i]),
           bcv: async () => { try { const r = await api.post('/api/tasas/bcv', {}); A.ok(r.aplicada ? `Tasa del ${r.fecha} actualizada: Bs ${A.fm(r.usd, 4)} por $` : (r.sinCambio ? 'Ya estaba al día con el BCV' : r.motivo)); await A.refrescarEstado(); P.tasas(); } catch (er) { A.fail(er); } } });
+      },
+      async impresion() {
+        const c0 = (await api.get('/api/parametros')).impresion;
+        const campos = [['ancho_mm', 'Ancho del papel (mm)', 40, 110, 1, 'Rollo de la impresora: 58 o 80'], ['margen_lateral_mm', 'Margen lateral (mm)', 0, 20, 0.5, 'Espacio libre a cada lado del ticket'],
+          ['margen_superior_mm', 'Margen superior (mm)', 0, 30, 0.5, 'Espacio antes del logo'], ['margen_inferior_mm', 'Margen inferior (mm)', 0, 40, 0.5, 'Papel que sale después de «Gracias» para poder cortar'],
+          ['letra_px', 'Tamaño de la letra (px)', 7, 18, 0.5, '10 = unos 30 caracteres en 58 mm; sube si se ve pequeña'], ['logo_alto_mm', 'Alto máximo del logo (mm)', 5, 40, 1, 'El logo se centra y no se deforma']];
+        out.innerHTML = `<div class="card"><p class="muted" style="margin:0 0 12px">Ajusta el ticket a tu impresora térmica. Con la <b>Roccia RC-5801 de 58 mm</b> la zona imprimible es de unos 48 mm (58 − 2 × 5 mm de margen lateral). Los cambios se ven en la vista previa; imprime un ticket de prueba para confirmarlos en el papel.</p>
+          <div class="grid" style="grid-template-columns:minmax(0,1fr) auto;gap:20px;align-items:start"><form id="f" class="form"><fieldset style="display:contents" ${dis}>
+            ${campos.map(([k, l, mn, mx, st, ay]) => `<div><label>${l}</label><input name="${k}" type="number" min="${mn}" max="${mx}" step="${st}" value="${c0[k]}" required><div class="muted" style="font-size:11px;margin-top:3px">${ay}</div></div>`).join('')}</fieldset>
+            <div class="full chips"><button class="btn" type="button" id="ptest">Imprimir ticket de prueba</button><button class="btn" type="button" id="prest">Valores de la RC-5801 (58 mm)</button>${edit ? '<button class="btn pri">Guardar</button>' : ''}</div></form>
+            <div><div class="muted" style="font-size:12px;margin-bottom:4px">Vista previa</div><iframe id="pv" title="Vista previa del ticket" style="border:1px solid var(--line,#ccc);background:#fff;height:560px;max-width:100%"></iframe></div></div></div>`;
+        const f = $('#f', root), pv = $('#pv', root);
+        const leer = () => Object.fromEntries(campos.map(([k]) => [k, +f.elements[k].value || 0]));
+        const pintar = () => { const c = leer(); pv.style.width = `calc(${c.ancho_mm}mm + 4px)`; pv.srcdoc = A.ticketHtml(A.ventaEjemplo(), c); };
+        f.addEventListener('input', pintar); pintar();
+        $('#ptest', root).onclick = () => A.imprimirHtml(A.ticketHtml(A.ventaEjemplo(), leer()));
+        $('#prest', root).onclick = () => { const d = { ancho_mm: 58, margen_lateral_mm: 5, margen_superior_mm: 2, margen_inferior_mm: 8, letra_px: 10, logo_alto_mm: 20 }; campos.forEach(([k]) => { f.elements[k].value = d[k]; }); pintar(); };
+        f.onsubmit = async (ev) => { ev.preventDefault(); try { await api.put('/api/parametros/impresion', leer()); await A.refrescarEstado(); A.ok('Impresión guardada'); } catch (er) { A.fail(er); } };
       },
       async cashea() {
         const c = (await api.get('/api/parametros')).cashea;

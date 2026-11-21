@@ -1087,6 +1087,21 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
     delete global.Abasto;
   }
 
+  paso('parámetros de impresión del ticket: medidas de la impresora térmica de 58 mm');
+  {
+    const p0 = (await ok(api('GET', '/api/parametros'))).impresion;
+    assert.deepEqual(p0, { ancho_mm: 58, margen_lateral_mm: 5, margen_superior_mm: 2, margen_inferior_mm: 8, letra_px: 10, logo_alto_mm: 20 });
+    assert.equal((await ok(api('GET', '/api/me'))).impresion.ancho_mm, 58);
+    await falla(api('PUT', '/api/parametros/impresion', { letra_px: 30 }), 400, /tamaño de letra/);
+    await falla(api('PUT', '/api/parametros/impresion', { ancho_mm: 20 }), 400, /ancho del papel/);
+    await falla(api('PUT', '/api/parametros/impresion', { ancho_mm: 58, margen_lateral_mm: 15 }), 400, /menos de 30 mm/);
+    await falla(api('PUT', '/api/parametros/impresion', { letra_px: 11 }, tokCajero), 403);
+    const n = await ok(api('PUT', '/api/parametros/impresion', { letra_px: 11.5, margen_lateral_mm: 4 }));
+    assert.equal(n.letra_px, 11.5); assert.equal(n.margen_lateral_mm, 4);
+    assert.equal((await ok(api('GET', '/api/me'))).impresion.letra_px, 11.5);
+    await ok(api('PUT', '/api/parametros/impresion', p0));
+  }
+
   paso('tasa del BCV: lectura de la página y registro automático sin pisar lo escrito a mano');
   {
     const BCV = require('../bcv');

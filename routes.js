@@ -154,7 +154,7 @@ staff('GET', '/api/me', null, ({ user, perms }) => {
   const lic = P.licencia(slug);
   return {
     usuario: user, permisos: [...perms], jornada: L.jornadaAbierta(), turno: L.turnoAbiertoDe(user.id),
-    empresa: D.param('empresa'), empresa_codigo: slug, lector: D.param('lector'), cashea: !!D.param('cashea').activo, imprimir_ticket: D.param('operacion').imprimir_ticket !== false,
+    empresa: D.param('empresa'), empresa_codigo: slug, lector: D.param('lector'), cashea: !!D.param('cashea').activo, imprimir_ticket: D.param('operacion').imprimir_ticket !== false, impresion: D.param('impresion'),
     licencia: { estado: lic.estado, vence: lic.vence, dias_restantes: lic.dias_restantes, plan: lic.plan },
     reconocimiento: { disponible: !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN), usados_mes: P.usoMes(slug), limite_mes: lic.max_reconocimientos }
   };
@@ -245,10 +245,10 @@ staff('PUT', '/api/usuarios/:id', 'usuarios.editar', ({ params, body, user }) =>
 // =====================================================================
 // PARÁMETROS, CUENTAS, CAJAS, MEDIOS DE PAGO APP
 // =====================================================================
-staff('GET', '/api/parametros', null, () => ({ empresa: D.param('empresa'), abc: D.param('abc'), operacion: D.param('operacion'), lector: D.param('lector'), tasas: D.param('tasas'), cashea: D.param('cashea') }));
+staff('GET', '/api/parametros', null, () => ({ empresa: D.param('empresa'), abc: D.param('abc'), operacion: D.param('operacion'), lector: D.param('lector'), tasas: D.param('tasas'), cashea: D.param('cashea'), impresion: D.param('impresion') }));
 staff('PUT', '/api/parametros/:clave', 'parametros.editar', ({ params, body, user }) => {
   const clave = params.clave;
-  if (!['empresa', 'abc', 'operacion', 'lector', 'tasas', 'cashea'].includes(clave)) err(404, 'Parámetro desconocido');
+  if (!['empresa', 'abc', 'operacion', 'lector', 'tasas', 'cashea', 'impresion'].includes(clave)) err(404, 'Parámetro desconocido');
   const antes = D.param(clave);
   const nuevo = { ...antes };
   for (const k of Object.keys(antes)) if (body[k] !== undefined) nuevo[k] = typeof antes[k] === 'number' ? num(body[k], `Valor inválido en ${k}`, 0) : typeof antes[k] === 'boolean' ? !!body[k] : String(body[k]);
@@ -257,6 +257,13 @@ staff('PUT', '/api/parametros/:clave', 'parametros.editar', ({ params, body, use
     if (nuevo.compra_cobertura_max_dias < 7 || nuevo.compra_cobertura_max_dias > 365) err(400, 'La cobertura máxima debe estar entre 7 y 365 días');
   }
   if (clave === 'empresa' && nuevo.logo && (!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(nuevo.logo) || nuevo.logo.length > 300000)) err(400, 'El logo debe ser una imagen PNG, JPG o WebP liviana');
+  if (clave === 'impresion') {
+    const rango = (v, min, max, nombre) => { if (!(v >= min && v <= max)) err(400, `${nombre} debe estar entre ${min} y ${max}`); };
+    rango(nuevo.ancho_mm, 40, 110, 'El ancho del papel (mm)'); rango(nuevo.margen_lateral_mm, 0, 20, 'El margen lateral (mm)');
+    rango(nuevo.margen_superior_mm, 0, 30, 'El margen superior (mm)'); rango(nuevo.margen_inferior_mm, 0, 40, 'El margen inferior (mm)');
+    rango(nuevo.letra_px, 7, 18, 'El tamaño de letra (px)'); rango(nuevo.logo_alto_mm, 5, 40, 'El alto del logo (mm)');
+    if (nuevo.ancho_mm - 2 * nuevo.margen_lateral_mm < 30) err(400, 'Con ese margen queda menos de 30 mm para imprimir: reduce el margen lateral o usa papel más ancho');
+  }
   if (clave === 'cashea') {
     if (nuevo.comision_pct < 0 || nuevo.comision_pct >= 100) err(400, 'La comisión de Cashea debe estar entre 0 y 100 %');
     if (nuevo.inicial_min_pct < 0 || nuevo.inicial_min_pct >= 100) err(400, 'La inicial mínima debe estar entre 0 y 100 %');
