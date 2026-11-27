@@ -67,9 +67,10 @@ function plantilla({ empresa = '', categorias = [], proveedores = [] } = {}) {
     else if (c.e === 'decimal' || c.e === 'entero') validaciones.push({ rango: rangoCol(c.k), minimo: 0, titulo: c.h.replace(/ \*/, ''), error: 'Escribe un número mayor o igual a 0.' });
   }
   const ejemplos = [
-    ['(Ejemplo) Harina de maíz precocida 1 kg', '7591234500011', 'PROD-0001', 'Harinas', 'Marca', '1 kg', 'caja', 'unidad', 20, 0.95, 1.3, '', 'sí', 25, 12, 60, 'Distribuidora Central', 'Pasillo 1'],
-    ['(Ejemplo) Refresco 2 L', '7591234500028', '', 'Bebidas', 'Marca', '2 L', 'caja', 'unidad', 6, 1.1, 1.6, '', 'sí', 30, 18, 90, 'Distribuidora Central', 'Nevera 1']
+    ['(Ejemplo) Harina de maíz precocida 1 kg', '7591234500011', 'PROD-0001', 'Harinas', 'Marca', '1 kg', 'caja', 'unidad', 20, 0.95, 1.3, '', 'sí', 10, 25, 12, 60, 'Distribuidora Central', 'Pasillo 1'],
+    ['(Ejemplo) Refresco 2 L', '7591234500028', '', 'Bebidas', 'Marca', '2 L', 'caja', 'unidad', 6, 1.1, 1.6, '', 'sí', '', 30, 18, 90, 'Distribuidora Central', 'Nevera 1']
   ];
+  if (ejemplos.some((f) => f.length !== COLUMNAS.length)) throw new Error('Las filas de ejemplo de la plantilla no coinciden con sus columnas');
   const filaCab = { alto: 44, celdas: COLUMNAS.map((c) => ({ v: c.h, e: c.req ? 'requerido' : 'cabecera' })) };
   const filasEj = ejemplos.map((f) => ({ celdas: f.map((v, i) => ({ v, e: COLUMNAS[i].e === 'decimal' || COLUMNAS[i].e === 'entero' ? 'ejDecimal' : 'ejTexto' })) }));
   const inventario = { nombre: 'Inventario', filas: [filaCab, ...filasEj], anchos: COLUMNAS.map((c) => ({ w: c.ancho, e: c.e || 'texto' })), congelar: 1, autofiltro: `A1:${require('./xlsx').numACol(COLUMNAS.length - 1)}1`, validaciones };

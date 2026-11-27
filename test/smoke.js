@@ -1087,6 +1087,18 @@ let n = 0; const paso = (t) => console.log(`  ${String(++n).padStart(2, '0')}. $
     delete global.Abasto;
   }
 
+  paso('plantilla de Excel: cada valor de ejemplo cae bajo su encabezado y cada validación en su columna');
+  {
+    const IE = require('../inv_excel'), { leerXlsx } = require('../xlsx');
+    const lib = leerXlsx(IE.plantilla({ empresa: 'X', categorias: ['A'], proveedores: ['P'] }));
+    const inv = lib.hojas.find((h) => h.nombre === 'Inventario');
+    const cab = inv.filas[0].celdas, ej = inv.filas[1].celdas;
+    assert.equal(cab.length, IE.COLUMNAS.length);
+    assert.equal(String(ej[cab.findIndex((h) => /^Existencia inicial/.test(h))]), '25', 'la existencia de ejemplo va bajo «Existencia inicial»');
+    assert.equal(String(ej[cab.findIndex((h) => /^Descuento al mayor/.test(h))]), '10', 'el descuento de ejemplo va bajo «Descuento al mayor %»');
+    assert.equal(String(ej[cab.findIndex((h) => /^Precio fijo/.test(h))]), 'sí');
+  }
+
   paso('parámetros de impresión del ticket: medidas de la impresora térmica de 58 mm');
   {
     const p0 = (await ok(api('GET', '/api/parametros'))).impresion;
