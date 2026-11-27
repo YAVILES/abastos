@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node --no-warnings server.js",
     "demo": "node --no-warnings seed-demo.js",
-    "test": "node --no-warnings test/plan_conteos.js && node --no-warnings test/smoke.js"
+    "test": "node --no-warnings test/plan_conteos.js && node --no-warnings test/reinicio_carga.js && node --no-warnings test/smoke.js"
   },
   "engines": {
     "node": ">=22.13.0"
